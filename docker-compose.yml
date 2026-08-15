@@ -9,6 +9,8 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "18543:5432"
+    networks:
+      - short_url_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shorturl -d shorturl"]
       interval: 5s
@@ -19,6 +21,8 @@ services:
     image: redis:7-alpine
     ports:
       - "16379:6379"
+    networks:
+      - short_url_network
     volumes:
       - redisdata:/data
     healthcheck:
@@ -40,6 +44,7 @@ services:
 
   app:
     build: .
+    container_name: short_url_app
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://shorturl:shorturl@db:5432/shorturl}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -54,8 +59,15 @@ services:
         condition: service_healthy
     ports:
       - "18000:8000"
+    networks:
+      - short_url_network
 
 volumes:
   pgdata:
   redisdata:
   geoipdata:
+
+networks:
+  short_url_network:
+    name: short_url_network
+    driver: bridge
