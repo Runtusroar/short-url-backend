@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.features.redirect.ua import get_platform
+from app.integrations.maxmind.country import get_country
 from app.models import AccessLog, AccessRule, Domain, IpBlacklist, ShortLink, TargetUrl
 
 
@@ -212,3 +214,38 @@ async def select_and_log_redirect(
         referer,
     )
     return action, target
+
+
+async def execute_redirect(
+    db: AsyncSession,
+    host: str,
+    short_code: str,
+    client_ip: str,
+    ua_string: str | None,
+    referer: str | None,
+) -> str:
+    domain, link = await resolve_domain_and_link(db, host, short_code)
+    blacklisted = await is_blacklisted(db, client_ip)
+    country = get_country(client_ip)
+    platform = get_platform(ua_string)
+    is_proxy = platform == "bot"
+
+    action, target = await select_and_log_redirect(
+        db,
+        link,
+        domain,
+        client_ip,
+        country,
+        ua_string,
+        platform,
+        referer,
+        blacklisted,
+        is_proxy,
+    )
+
+    if not target:
+        if action in ("denied", "blocked"):
+            raise PermissionDeniedError("访问被拒绝")
+        raise NotFoundError("目标URL")
+
+    return target.url

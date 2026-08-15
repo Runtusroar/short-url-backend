@@ -407,6 +407,22 @@ async def test_redirect_to_target(client, admin_token, default_domain):
     assert resp.headers["location"] == "https://redirect.example.com"
 
 
+async def test_head_redirect_preserves_plain_302_contract(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_target_url(client, admin_token, link["id"], "https://head.example.com")
+    await _add_allow_rule(client, admin_token, link["id"])
+
+    resp = await client.head(
+        f"/{link['short_code']}",
+        headers=_host(),
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://head.example.com"
+    assert resp.content == b""
+
+
 async def test_redirect_unknown_short_code(client):
     resp = await client.get("/notexist", headers=_host(), follow_redirects=False)
     assert resp.status_code == 404
@@ -711,4 +727,3 @@ async def test_redirect_blacklisted_ip(client, admin_token, default_domain):
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "PERMISSION_DENIED"
-

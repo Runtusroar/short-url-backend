@@ -35,10 +35,24 @@ test:
 	uv run pytest -v
 
 test-unit:
-	uv run pytest -v tests/test_auth.py tests/test_main.py tests/test_redirect.py tests/test_short_code.py tests/test_services_edge.py
+	uv run pytest -v \
+		tests/core/test_auth.py \
+		tests/core/test_client_ip.py \
+		tests/core/test_config.py \
+		tests/core/test_main.py \
+		tests/core/test_rate_limit.py \
+		tests/features/auth/test_auth_cookie.py \
+		tests/features/redirect/test_redirect.py \
+		tests/features/redirect/test_redirect_service_edge.py \
+		tests/features/short_links/test_short_code.py \
+		tests/features/short_links/test_short_code_edge.py \
+		tests/integrations/test_geoip.py
 
 test-integration:
-	uv run pytest -v tests/test_api.py tests/test_blacklist.py tests/test_logs_extended.py
+	uv run pytest -v \
+		tests/features/test_api.py \
+		tests/features/blacklist/test_blacklist.py \
+		tests/features/access_logs/test_logs_extended.py
 
 migrate:
 	$(DOCKER_COMPOSE) run --rm app alembic upgrade head

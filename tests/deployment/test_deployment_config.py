@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -51,6 +52,26 @@ def test_makefile_has_one_environment_agnostic_entrypoint():
     assert "up: check-config" in makefile
     assert "dev-up:" not in makefile
     assert "prod-up:" not in makefile
+
+
+@pytest.mark.parametrize("target", ["test-unit", "test-integration"])
+def test_make_test_targets_only_reference_existing_test_files(target):
+    result = subprocess.run(
+        ["make", "-n", target],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    command = result.stdout.replace("\\\n", " ")
+    test_paths = [
+        ROOT / token
+        for token in shlex.split(command)
+        if token.startswith("tests/") and token.endswith(".py")
+    ]
+    assert test_paths, f"{target} does not select any test files"
+    assert [str(path.relative_to(ROOT)) for path in test_paths if not path.is_file()] == []
 
 
 @pytest.mark.parametrize(

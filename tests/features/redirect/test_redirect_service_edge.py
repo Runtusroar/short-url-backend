@@ -1,10 +1,17 @@
 """Redirect service edge case tests."""
 
+from uuid import uuid4
 from unittest.mock import MagicMock
 
+import pytest
+
+from app.core.exceptions import PermissionDeniedError
+from app.models import AccessRule, Domain, ShortLink
+from app.features.redirect import service
 from app.features.redirect.service import (
     _match_list,
     _match_referer,
+    execute_redirect,
     evaluate_rules,
     rule_matches,
     weighted_random_choice,
@@ -107,3 +114,126 @@ def test_weighted_random_choice_zero_total_weight():
     url.weight = 0
     result = weighted_random_choice([url])
     assert result is url
+
+
+class _ScalarRows:
+    def __init__(self, values):
+        self._values = values
+
+    def all(self):
+        return self._values
+
+
+class _QueryResult:
+    def __init__(self, *, scalar=None, values=None):
+        self._scalar = scalar
+        self._values = values or []
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalars(self):
+        return _ScalarRows(self._values)
+
+
+class _RecordingSession:
+    def __init__(self, responses, events):
+        self._responses = iter(responses)
+        self.events = events
+        self.added = []
+        self.commits = 0
+
+    async def execute(self, statement):
+        self.events.append("query")
+        return next(self._responses)
+
+    def add(self, value):
+        self.events.append("log")
+        self.added.append(value)
+
+    async def commit(self):
+        self.events.append("commit")
+        self.commits += 1
+
+
+async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error(monkeypatch):
+    domain = Domain(id=uuid4(), name="test.local", is_active=True, is_default=True)
+    link = ShortLink(
+        id=uuid4(),
+        domain_id=domain.id,
+        short_code="abc123",
+        is_active=True,
+        default_action="deny",
+    )
+    rule = AccessRule(
+        short_link_id=link.id,
+        action="allow",
+        priority=0,
+        countries=["CN"],
+        ua_platforms=[],
+        allow_bot=True,
+        allow_proxy=False,
+        is_active=True,
+    )
+    events = []
+    db = _RecordingSession(
+        [
+            _QueryResult(scalar=domain),
+            _QueryResult(scalar=link),
+            _QueryResult(scalar=None),
+            _QueryResult(values=[rule]),
+            _QueryResult(values=[]),
+        ],
+        events,
+    )
+    real_get_platform = service.get_platform
+
+    def record_country(ip):
+        events.append(("country", ip))
+        return "CN"
+
+    def record_platform(ua_string):
+        events.append(("platform", ua_string))
+        return real_get_platform(ua_string)
+
+    monkeypatch.setattr(service, "get_country", record_country)
+    monkeypatch.setattr(service, "get_platform", record_platform)
+
+    with pytest.raises(PermissionDeniedError) as raised:
+        await execute_redirect(
+            db,
+            "test.local",
+            "abc123",
+            "203.0.113.9",
+            "Googlebot/2.1 (+http://www.google.com/bot.html)",
+            "https://source.example/path",
+        )
+
+    assert raised.value.status_code == 403
+    assert raised.value.message == "访问被拒绝"
+    assert events == [
+        "query",
+        "query",
+        "query",
+        ("country", "203.0.113.9"),
+        ("platform", "Googlebot/2.1 (+http://www.google.com/bot.html)"),
+        "query",
+        "query",
+        "log",
+        "commit",
+    ]
+    assert db.commits == 1
+    assert len(db.added) == 1
+    log = db.added[0]
+    assert log.short_link_id == link.id
+    assert log.domain_id == domain.id
+    assert log.target_url_id is None
+    assert log.result == "denied"
+    assert log.ip == "203.0.113.9"
+    assert log.country == "CN"
+    assert log.ua_string == "Googlebot/2.1 (+http://www.google.com/bot.html)"
+    assert log.ua_platform == "bot"
+    assert log.referer == "https://source.example/path"
+    assert log.accessed_at.tzinfo is not None
+    assert log.accessed_at_plus8 == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
+    assert log.dedup_bucket == int(log.accessed_at.timestamp() // 30) * 30
