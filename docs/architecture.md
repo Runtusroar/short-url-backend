@@ -26,6 +26,7 @@ app/
 ├── models/
 │   ├── access_log.py
 │   ├── access_rule.py
+│   ├── base.py
 │   ├── blacklist.py
 │   ├── domain.py
 │   ├── short_link.py
@@ -38,10 +39,12 @@ tests/
 ├── deployment/
 ├── features/
 │   ├── access_logs/
+│   ├── auth/
 │   ├── blacklist/
 │   ├── domains/
 │   ├── redirect/
-│   └── short_links/
+│   ├── short_links/
+│   └── test_api.py
 ├── integrations/
 └── conftest.py
 ```
