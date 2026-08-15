@@ -1,0 +1,37 @@
+[project]
+name = "short-url"
+version = "0.1.0"
+description = "Short URL service with multi-domain support"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi==0.111.0",
+    "uvicorn[standard]==0.30.0",
+    "sqlalchemy[asyncio]==2.0.31",
+    "psycopg[binary]==3.3.4",
+    "alembic==1.13.2",
+    "pydantic-settings==2.3.4",
+    "bcrypt==5.0.0",
+    "pyjwt==2.8.0",
+    "python-multipart==0.0.9",
+    "user-agents==2.2.0",
+    "geoip2==4.8.0",
+    "redis==5.0.7",
+    "fastapi-limiter==0.1.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.2.2",
+    "pytest-asyncio==0.23.7",
+    "httpx==0.27.0",
+    "asgi-lifespan==2.1.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:fastapi.*",
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:httpx.*",
+    "ignore::DeprecationWarning:pytest_asyncio.*",
+]

@@ -21,19 +21,14 @@ restart:
 logs:
 	docker-compose logs -f app
 
-PYTEST = .venv/bin/pytest
-
-# 运行全部测试（单元测试 + 集成测试，集成测试需要本地 PostgreSQL 5432 可访问）
 test:
-	$(PYTEST) -v
+	uv run pytest -v
 
-# 仅运行不依赖数据库的单元测试
 test-unit:
-	$(PYTEST) -v tests/test_auth.py tests/test_main.py tests/test_redirect.py tests/test_short_code.py
+	uv run pytest -v tests/test_auth.py tests/test_main.py tests/test_redirect.py tests/test_short_code.py
 
-# 仅运行集成测试（需要 PostgreSQL 测试库）
 test-integration:
-	$(PYTEST) -v tests/test_api.py
+	uv run pytest -v tests/test_api.py
 
 migrate:
 	docker-compose exec app alembic upgrade head

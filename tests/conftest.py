@@ -9,7 +9,7 @@ os.environ.setdefault(
 import pytest
 import pytest_asyncio
 from asgi_lifespan import LifespanManager
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from sqlalchemy import create_engine, text
 
 from app.auth import get_password_hash
@@ -89,7 +89,8 @@ def setup_database():
 @pytest_asyncio.fixture
 async def client():
     async with LifespanManager(app):
-        async with AsyncClient(app=app, base_url="http://test") as ac:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
 
 
