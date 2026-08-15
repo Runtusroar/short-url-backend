@@ -1,25 +1,28 @@
 .PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash
 
+# Auto-detect docker compose command (modern Docker uses "docker compose", older versions use "docker-compose")
+DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
+
 u ?= admin
 p ?= admin123456
 
 up:
-	docker-compose up -d
+	$(DOCKER_COMPOSE) up -d
 
 down:
-	docker-compose down
+	$(DOCKER_COMPOSE) down
 
 build:
-	docker-compose build app
+	$(DOCKER_COMPOSE) build app
 
 rebuild:
-	docker-compose up -d --build app
+	$(DOCKER_COMPOSE) up -d --build app
 
 restart:
-	docker-compose restart app
+	$(DOCKER_COMPOSE) restart app
 
 logs:
-	docker-compose logs -f app
+	$(DOCKER_COMPOSE) logs -f app
 
 test:
 	uv run pytest -v
@@ -31,18 +34,18 @@ test-integration:
 	uv run pytest -v tests/test_api.py tests/test_blacklist.py tests/test_logs_extended.py
 
 migrate:
-	docker-compose exec app alembic upgrade head
+	$(DOCKER_COMPOSE) exec app alembic upgrade head
 
 makemigrations:
-	docker-compose exec app alembic revision --autogenerate -m "$(m)"
+	$(DOCKER_COMPOSE) exec app alembic revision --autogenerate -m "$(m)"
 
 create-admin:
-	docker-compose exec app python scripts/create_admin.py $(u) $(p)
+	$(DOCKER_COMPOSE) exec app python scripts/create_admin.py $(u) $(p)
 
 create-domain:
-	docker-compose exec app python scripts/create_domain.py $(d)
+	$(DOCKER_COMPOSE) exec app python scripts/create_domain.py $(d)
 
 init: up migrate create-domain create-admin
 
 bash:
-	docker-compose exec app bash
+	$(DOCKER_COMPOSE) exec app bash
