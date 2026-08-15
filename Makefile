@@ -1,4 +1,4 @@
-.PHONY: env check-config up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
+.PHONY: env check-config check-schema up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
 
 # Auto-detect docker compose command (modern Docker uses "docker compose", older versions use "docker-compose")
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
@@ -54,8 +54,12 @@ test-integration:
 		tests/features/blacklist/test_blacklist.py \
 		tests/features/access_logs/test_logs_extended.py
 
-migrate:
+check-schema:
+	$(DOCKER_COMPOSE) run --rm app python scripts/check_schema.py --mode pre
+
+migrate: check-schema
 	$(DOCKER_COMPOSE) run --rm app alembic upgrade head
+	$(DOCKER_COMPOSE) run --rm app python scripts/check_schema.py --mode post
 
 makemigrations:
 	$(DOCKER_COMPOSE) exec app alembic revision --autogenerate -m "$(m)"

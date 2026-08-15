@@ -137,3 +137,19 @@ def test_make_restart_validates_then_recreates_app():
         "docker compose up -d --force-recreate app",
     ]
     assert "docker compose restart app" not in result.stdout
+
+
+def test_migrate_runs_preflight_upgrade_and_postflight_in_order():
+    result = subprocess.run(
+        ["make", "-n", "DOCKER_COMPOSE=docker compose", "migrate"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == [
+        "docker compose run --rm app python scripts/check_schema.py --mode pre",
+        "docker compose run --rm app alembic upgrade head",
+        "docker compose run --rm app python scripts/check_schema.py --mode post",
+    ]

@@ -62,6 +62,14 @@ make create-domain d=go.example.com
 make create-admin u=admin p='replace-with-a-strong-password'
 ```
 
+`make migrate` first performs a read-only schema preflight, applies every
+pending Alembic revision, and then runs a postflight that requires the repaired
+indexes and `access_logs.target_url_id ON DELETE SET NULL`. The preflight allows
+an empty database and historical states that the migration chain can repair,
+but rejects conflicting same-named index definitions. If it reports schema
+drift, investigate and correct the reported database object; do not bypass the
+check or use `alembic stamp` to hide the mismatch.
+
 Install an Nginx server block for the short-link hostname. The certificate paths
 below are examples; use the paths for the certificate already issued to this
 host.
@@ -172,6 +180,11 @@ make build
 make migrate
 make up
 ```
+
+The update-time `make migrate` uses the same read-only preflight, Alembic
+upgrade, and enforcing postflight as the first deployment. Treat any preflight
+drift error as a deployment stop: investigate it rather than bypassing the
+check or stamping the database revision.
 
 `make up` recreates the services from the newly built image. Repeat the health
 and short-link verification after every update. Backups can contain sensitive
