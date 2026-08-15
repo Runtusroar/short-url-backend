@@ -54,7 +54,7 @@ async def login_cookie(
         httponly=True,
         max_age=settings.access_token_expire_minutes * 60,
         samesite="lax",
-        secure=False,  # set to True when serving over HTTPS
+        secure=settings.cookie_secure,
     )
     return user
 
