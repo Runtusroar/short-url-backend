@@ -26,15 +26,27 @@ Set production values in `.env` before starting anything:
 
 ```dotenv
 APP_ENV=prod
+POSTGRES_USER=shorturl
+POSTGRES_PASSWORD=replace-with-a-strong-unique-database-password
+POSTGRES_DB=shorturl
+DATABASE_URL=postgresql+psycopg://shorturl:replace-with-a-strong-unique-database-password@db:5432/shorturl
+REDIS_URL=redis://redis:6379/0
 SECRET_KEY=replace-with-a-unique-non-default-secret-at-least-32-characters
 COOKIE_SECURE=true
 CORS_ORIGINS=https://admin.example.com,https://app.example.com
 TRUST_PROXY_HEADERS=true
 ```
 
-Use only explicit HTTPS origins in `CORS_ORIGINS`; do not use `*`. Keep the
-database and Redis URLs, ports, and other required settings defined by
-`.env.example` unless this host deliberately uses different values.
+Replace `.env.example`'s development PostgreSQL credentials rather than copying
+them unchanged. Choose a strong, unique `POSTGRES_PASSWORD`. `DATABASE_URL` must
+use the same username, password, and database named by `POSTGRES_USER`,
+`POSTGRES_PASSWORD`, and `POSTGRES_DB`; URL-encode credentials when necessary.
+`DATABASE_URL` and `REDIS_URL` are mandatory and must be non-empty because
+Compose rejects missing or empty values.
+
+Use only explicit HTTPS origins in `CORS_ORIGINS`; do not use `*`. Replace every
+placeholder above before deployment and keep the other required ports and
+settings defined by `.env.example` unless this host deliberately changes them.
 
 ## First deployment
 
@@ -85,18 +97,15 @@ a separately reviewed client-IP design.
 
 ## Verify the release
 
-Check both application probes through the public hostname, then follow the
-application logs:
+Check both application probes through the public hostname:
 
 ```bash
 curl --fail --silent https://go.example.com/health/live
 curl --fail --silent https://go.example.com/health/ready
-make logs
 ```
 
 Make an actual request for a known short link from an external client, supplying
-a recognizable user agent and referer. Confirm in the application log that the
-entry records the expected `Host`, client IP, user agent, and referer.
+a recognizable user agent and referer:
 
 ```bash
 curl -I https://go.example.com/example-code \
@@ -104,7 +113,42 @@ curl -I https://go.example.com/example-code \
   -e 'https://admin.example.com/deployment-check'
 ```
 
-For an in-place application restart after a verified configuration change, use:
+In a separate terminal, run `make logs` and confirm the matching Uvicorn access
+entry and its response status. Uvicorn access output does not contain the stored
+client IP, full user agent, referer, result, or domain association. Query the
+current database record to verify those fields:
+
+```bash
+docker compose exec db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Then run this query in `psql`:
+
+```sql
+SELECT
+    d.name AS configured_domain,
+    a.ip AS client_ip,
+    a.ua_string AS user_agent,
+    a.referer,
+    a.result,
+    a.accessed_at
+FROM access_logs AS a
+JOIN domains AS d ON d.id = a.domain_id
+JOIN short_links AS s ON s.id = a.short_link_id
+WHERE s.short_code = 'example-code'
+ORDER BY a.accessed_at DESC
+LIMIT 1;
+```
+
+Confirm the client IP, recognizable user agent and referer, expected result, and
+that `configured_domain` identifies `go.example.com`. Raw request `Host` is not
+stored in the current schema, so defer verification of the raw header until a
+later schema field records it.
+
+Use `make up` for normal deployments and updates. `make restart` validates
+configuration and force-recreates the app container, so `.env` changes take
+effect. Use it for an in-place restart of an existing release after a verified
+configuration change:
 
 ```bash
 make restart
@@ -123,7 +167,7 @@ git checkout --detach <chosen-commit-or-tag>
 BACKUP_DIR=/var/backups/short-url
 sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" "$BACKUP_DIR"
 umask 077
-docker compose exec -T db pg_dump -U shorturl shorturl > "$BACKUP_DIR/postgres-before-update-$(date +%F-%H%M%S).sql"
+docker compose exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "$BACKUP_DIR/postgres-before-update-$(date +%F-%H%M%S).sql"
 make build
 make migrate
 make up

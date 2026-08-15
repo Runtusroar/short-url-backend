@@ -41,3 +41,42 @@ def test_rollback_rebuilds_previous_commit_before_starting_services():
     build = rollback.index("make build")
     up = rollback.index("make up")
     assert checkout < build < up
+
+
+def test_production_requires_nondevelopment_service_credentials():
+    text = DOC.read_text()
+    compact = " ".join(text.split())
+    assert "`DATABASE_URL` and `REDIS_URL` are mandatory and must be non-empty" in compact
+    assert "Replace `.env.example`'s development PostgreSQL credentials" in compact
+    assert "strong, unique `POSTGRES_PASSWORD`" in compact
+    assert (
+        "`DATABASE_URL` must use the same username, password, and database named by "
+        "`POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`"
+    ) in compact
+    assert "postgresql+psycopg://shorturl:shorturl" not in text
+    assert "pg_dump -U shorturl shorturl" not in text
+
+
+def test_restart_recreates_app_after_config_validation():
+    text = " ".join(DOC.read_text().split())
+    assert (
+        "`make restart` validates configuration and force-recreates the app container, "
+        "so `.env` changes take effect"
+    ) in text
+    assert "Use `make up` for normal deployments and updates" in text
+
+
+def test_verification_distinguishes_access_output_from_stored_request_data():
+    text = DOC.read_text()
+    compact = " ".join(text.split())
+    assert "Uvicorn access entry and its response status" in compact
+    for field in (
+        "d.name AS configured_domain",
+        "a.ip AS client_ip",
+        "a.ua_string AS user_agent",
+        "a.referer",
+        "a.result",
+    ):
+        assert field in text
+    assert "Raw request `Host` is not stored" in compact
+    assert "application log that the entry records the expected `Host`" not in compact
