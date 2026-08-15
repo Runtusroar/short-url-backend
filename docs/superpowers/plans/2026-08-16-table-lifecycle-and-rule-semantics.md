@@ -239,13 +239,13 @@ Use `down_revision = "f31a8c0d4e72"` and perform this order:
 2. Set `short_links.default_action` server default to `deny` without rewriting valid existing `allow` rows; add `ck_short_links_default_action`.
 3. Add `deleted_at` and nullable `deleted_by` with explicit `RESTRICT` FK plus `ck_short_links_deleted_actor` (`deleted_by IS NULL OR deleted_at IS NOT NULL`).
 4. Replace short-link domain/owner foreign keys with named `ON DELETE RESTRICT` constraints.
-5. Add `idx_short_links_domain_created_at` and `idx_short_links_domain_owner_created_at` with descending `created_at`; remove the now-redundant `idx_short_links_domain`.
+5. Add `idx_short_links_domain_created_at` and `idx_short_links_domain_owner_created_at` with descending `created_at`; retain transitional `idx_short_links_domain` in both ORM and database until Task 5 updates schema preflight and removes all superseded Phase 3 indexes atomically.
 6. Add nullable `short_link_permissions.granted_by` with `RESTRICT`; make its link/user delete actions explicit.
 7. Add `target_urls.name VARCHAR(128)`, `updated_at`, `ck_target_urls_type`, and `ck_target_urls_weight`.
 8. Before the weight check, convert rows with `weight < 1` to `weight=1, is_active=false`.
 9. Align UUID/time/Boolean defaults and preserve the already-correct target-log `SET NULL` behavior.
 
-The downgrade recreates `description` from `name`, restores the five Phase 3 baseline indexes/old constraints, converts target columns back, and keeps any normalized/default values that cannot be reconstructed.
+The downgrade recreates `description` from `name`, removes the two new short-link indexes while leaving the five Phase 3 baseline indexes untouched, restores old constraints, converts target columns back, and keeps normalized/default values that cannot be reconstructed.
 
 - [ ] **Step 4: Switch schemas and services to the final contract**
 
@@ -445,11 +445,14 @@ Expected sole head: `e52d9a6c8031`.
 **Files:**
 - Modify: `app/models/enums.py`
 - Modify: `app/models/access_log.py`
+- Modify: `app/models/short_link.py`
 - Modify: `app/features/redirect/router.py`
 - Modify: `app/features/redirect/service.py`
 - Modify: `app/features/access_logs/schemas.py`
 - Modify: `app/features/access_logs/service.py`
 - Modify: `app/features/short_links/service.py`
+- Modify: `scripts/check_schema.py`
+- Modify: `tests/deployment/test_schema_check.py`
 - Create: `alembic/versions/a73f0b9d4216_access_log_audit_schema.py`
 - Create: `tests/migrations/test_phase4_access_logs.py`
 - Modify: `tests/features/redirect/test_redirect_service_edge.py`
@@ -509,7 +512,7 @@ idx_access_logs_domain_result_accessed_at(domain_id, result, accessed_at DESC)
 idx_access_logs_domain_country_accessed_at(domain_id, country, accessed_at DESC)
 ```
 
-11. Drop the four Phase 3 access-log indexes and old `ip`, `ua_string`, and `accessed_at_plus8` columns after the final indexes exist.
+11. Drop the four Phase 3 access-log indexes, transitional `idx_short_links_domain`, and old `ip`, `ua_string`, and `accessed_at_plus8` columns after the final indexes exist.
 
 The downgrade first rejects rows with decision/proxy values the old schema cannot safely represent, reconstructs old text/date/user-agent columns, restores Phase 3 indexes and prior FKs, then removes the final columns. It must never cascade-delete logs.
 
@@ -522,6 +525,8 @@ The downgrade first rejects rows with decision/proxy values the old schema canno
 - Populate target/rule snapshots from objects selected for that request.
 - Rename response fields and all date/distinct queries to `client_ip`, `user_agent`, and `access_date`.
 - Compute new request `access_date` with `ZoneInfo(domain.timezone)`.
+- Remove transitional `idx_short_links_domain` from `ShortLink.__table_args__` when the migration removes it.
+- Update schema-check expected indexes and FK actions in the same commit so its real postflight integration test passes against the new head. Task 6 expands this into complete type/default/check and historical-path coverage.
 - Keep the existing offset pagination and limited filter set unchanged; Phase 5 replaces them.
 
 - [ ] **Step 5: Verify and commit**
@@ -531,7 +536,7 @@ uv run pytest -q tests/migrations/test_phase4_access_logs.py tests/features/redi
 uv run pytest -q
 uv run alembic heads
 git diff --check
-git add app alembic/versions/a73f0b9d4216_access_log_audit_schema.py tests
+git add app scripts/check_schema.py alembic/versions/a73f0b9d4216_access_log_audit_schema.py tests
 git commit -m "feat: preserve explainable access-log history"
 ```
 
