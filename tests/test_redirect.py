@@ -22,28 +22,48 @@ def _rule(**kwargs):
 
 def test_rule_matches_country():
     rule = _rule(countries=["CN"], ua_platforms=[], referer_pattern=None)
-    assert rule_matches(rule, "CN", "pc", "https://example.com") is True
-    assert rule_matches(rule, "US", "pc", "https://example.com") is False
+    assert rule_matches(rule, "CN", "pc", "https://example.com", False) is True
+    assert rule_matches(rule, "US", "pc", "https://example.com", False) is False
 
 
 def test_rule_matches_platform():
     rule = _rule(countries=[], ua_platforms=["mobile"], referer_pattern=None)
-    assert rule_matches(rule, "CN", "mobile", None) is True
-    assert rule_matches(rule, "CN", "pc", None) is False
+    assert rule_matches(rule, "CN", "mobile", None, False) is True
+    assert rule_matches(rule, "CN", "pc", None, False) is False
+
+
+def test_rule_matches_bot_allowed():
+    rule = _rule(countries=[], ua_platforms=[], allow_bot=True)
+    assert rule_matches(rule, "CN", "bot", None, False) is True
+
+
+def test_rule_matches_bot_denied():
+    rule = _rule(countries=[], ua_platforms=[], allow_bot=False)
+    assert rule_matches(rule, "CN", "bot", None, False) is False
+
+
+def test_rule_matches_proxy_allowed():
+    rule = _rule(countries=[], ua_platforms=[], allow_proxy=True)
+    assert rule_matches(rule, "CN", "pc", None, True) is True
+
+
+def test_rule_matches_proxy_denied():
+    rule = _rule(countries=[], ua_platforms=[], allow_proxy=False)
+    assert rule_matches(rule, "CN", "pc", None, True) is False
 
 
 def test_evaluate_rules_priority():
     rule1 = _rule(action="deny", priority=0, countries=["CN"])
     rule2 = _rule(action="allow", priority=1, countries=["CN"])
-    assert evaluate_rules([rule1, rule2], FakeShortLink(), "CN", "pc", None) == "deny"
+    assert evaluate_rules([rule1, rule2], FakeShortLink(), "CN", "pc", None, False) == "deny"
 
 
 def test_evaluate_rules_default_allow():
-    assert evaluate_rules([], FakeShortLink("allow"), "CN", "pc", None) == "allow"
+    assert evaluate_rules([], FakeShortLink("allow"), "CN", "pc", None, False) == "allow"
 
 
 def test_evaluate_rules_default_deny():
-    assert evaluate_rules([], FakeShortLink("deny"), "CN", "pc", None) == "deny"
+    assert evaluate_rules([], FakeShortLink("deny"), "CN", "pc", None, False) == "deny"
 
 
 def test_weighted_random_choice_respects_weight():

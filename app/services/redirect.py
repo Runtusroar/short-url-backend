@@ -24,12 +24,24 @@ def _match_referer(referer: str | None, pattern: str | None) -> bool:
     return fnmatch.fnmatch(referer, pattern)
 
 
-def rule_matches(rule: AccessRule, country: str | None, platform: str | None, referer: str | None) -> bool:
-    return (
-        _match_list(country, rule.countries)
-        and _match_list(platform, rule.ua_platforms)
-        and _match_referer(referer, rule.referer_pattern)
-    )
+def rule_matches(
+    rule: AccessRule,
+    country: str | None,
+    platform: str | None,
+    referer: str | None,
+    is_proxy: bool,
+) -> bool:
+    if not _match_list(country, rule.countries):
+        return False
+    if platform == "bot" and not rule.allow_bot:
+        return False
+    if platform != "bot" and not _match_list(platform, rule.ua_platforms):
+        return False
+    if is_proxy and not rule.allow_proxy:
+        return False
+    if not _match_referer(referer, rule.referer_pattern):
+        return False
+    return True
 
 
 def evaluate_rules(
@@ -38,11 +50,12 @@ def evaluate_rules(
     country: str | None,
     platform: str | None,
     referer: str | None,
+    is_proxy: bool,
 ) -> str:
     active_rules = [r for r in rules if r.is_active]
     active_rules.sort(key=lambda r: r.priority)
     for rule in active_rules:
-        if rule_matches(rule, country, platform, referer):
+        if rule_matches(rule, country, platform, referer, is_proxy):
             return rule.action
     return short_link.default_action
 
@@ -65,13 +78,14 @@ async def get_redirect_target(
     platform: str | None,
     referer: str | None,
     is_blacklisted: bool,
+    is_proxy: bool,
 ) -> tuple[str, UUID | None]:
     if is_blacklisted:
         action = "blocked"
     else:
         result = await db.execute(select(AccessRule).where(AccessRule.short_link_id == short_link.id))
         rules = result.scalars().all()
-        action = evaluate_rules(rules, short_link, country, platform, referer)
+        action = evaluate_rules(rules, short_link, country, platform, referer, is_proxy)
         if action == "allow":
             action = "allowed"
         elif action == "deny":

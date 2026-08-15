@@ -79,6 +79,8 @@ class AccessRuleBase(BaseModel):
     countries: list[str] = Field(default_factory=list)
     ua_platforms: list[str] = Field(default_factory=list)
     referer_pattern: str | None = None
+    allow_proxy: bool = True
+    allow_bot: bool = True
     is_active: bool = True
 
 
@@ -111,15 +113,13 @@ class ShortLinkCreate(BaseModel):
     domain_id: UUID
     custom_alias: str | None = Field(default=None, pattern="^[a-zA-Z0-9_-]{3,32}$")
     description: str | None = None
-    default_action: str = Field(default="allow", pattern="^(allow|deny)$")
-    normal_url: str | None = None
-    blocked_url: str | None = None
+    normal_urls: list[str] = Field(default_factory=list, min_length=1)
+    blocked_urls: list[str] = Field(default_factory=list, min_length=1)
 
 
 class ShortLinkUpdate(BaseModel):
     description: str | None = None
     is_active: bool | None = None
-    default_action: str | None = Field(default=None, pattern="^(allow|deny)$")
 
 
 class ShortLinkResponse(BaseModel):

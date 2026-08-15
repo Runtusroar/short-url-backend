@@ -23,6 +23,12 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _is_proxy(request: Request) -> bool:
+    """Detect proxy/VPN by common proxy headers."""
+    proxy_headers = ["x-forwarded-for", "x-real-ip", "via", "forwarded"]
+    return any(request.headers.get(header) for header in proxy_headers)
+
+
 async def _is_blacklisted(db: AsyncSession, ip: str) -> bool:
     result = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == ip))
     return result.scalar_one_or_none() is not None
@@ -98,8 +104,9 @@ async def redirect(
     ua_string = request.headers.get("user-agent")
     platform = get_platform(ua_string)
     referer = request.headers.get("referer")
+    is_proxy = _is_proxy(request)
 
-    action, target = await get_redirect_target(db, link, country, platform, referer, is_blacklisted)
+    action, target = await get_redirect_target(db, link, country, platform, referer, is_blacklisted, is_proxy)
 
     await _log_access(db, link, domain, target, action, ip, country, ua_string, platform, referer)
 

@@ -119,6 +119,8 @@ class AccessRule(Base):
     countries = Column(JSONB, default=list)
     ua_platforms = Column(JSONB, default=list)
     referer_pattern = Column(String(255))
+    allow_proxy = Column(Boolean, default=True, nullable=False)
+    allow_bot = Column(Boolean, default=True, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
 
 

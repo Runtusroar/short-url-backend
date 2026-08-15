@@ -85,11 +85,13 @@ def test_rule_matches_all_conditions():
     rule.countries = ["CN"]
     rule.ua_platforms = ["mobile"]
     rule.referer_pattern = "https://example.com/*"
+    rule.allow_proxy = True
+    rule.allow_bot = True
 
-    assert rule_matches(rule, "CN", "mobile", "https://example.com/foo") is True
-    assert rule_matches(rule, "US", "mobile", "https://example.com/foo") is False
-    assert rule_matches(rule, "CN", "pc", "https://example.com/foo") is False
-    assert rule_matches(rule, "CN", "mobile", "https://other.com/foo") is False
+    assert rule_matches(rule, "CN", "mobile", "https://example.com/foo", False) is True
+    assert rule_matches(rule, "US", "mobile", "https://example.com/foo", False) is False
+    assert rule_matches(rule, "CN", "pc", "https://example.com/foo", False) is False
+    assert rule_matches(rule, "CN", "mobile", "https://other.com/foo", False) is False
 
 
 def test_evaluate_rules_priority():
@@ -99,6 +101,8 @@ def test_evaluate_rules_priority():
     deny.action = "deny"
     deny.countries = deny.ua_platforms = None
     deny.referer_pattern = None
+    deny.allow_proxy = True
+    deny.allow_bot = True
 
     allow = MagicMock()
     allow.is_active = True
@@ -106,10 +110,12 @@ def test_evaluate_rules_priority():
     allow.action = "allow"
     allow.countries = allow.ua_platforms = None
     allow.referer_pattern = None
+    allow.allow_proxy = True
+    allow.allow_bot = True
 
     short_link = MagicMock()
     short_link.default_action = "allow"
-    assert evaluate_rules([allow, deny], short_link, None, None, None) == "deny"
+    assert evaluate_rules([allow, deny], short_link, None, None, None, False) == "deny"
 
 
 def test_evaluate_rules_inactive_ignored():
@@ -118,10 +124,12 @@ def test_evaluate_rules_inactive_ignored():
     inactive.priority = 1
     inactive.action = "deny"
     inactive.countries = inactive.ua_platforms = inactive.referer_pattern = None
+    inactive.allow_proxy = True
+    inactive.allow_bot = True
 
     short_link = MagicMock()
     short_link.default_action = "allow"
-    assert evaluate_rules([inactive], short_link, None, None, None) == "allow"
+    assert evaluate_rules([inactive], short_link, None, None, None, False) == "allow"
 
 
 def test_weighted_random_choice_zero_total_weight():
