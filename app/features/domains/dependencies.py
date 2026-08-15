@@ -8,7 +8,7 @@ from app.core.security import get_current_user
 from app.models import Domain, User, UserDomain
 
 
-def _get_host(request: Request) -> str:
+def get_request_host(request: Request) -> str:
     host = request.headers.get("host", "localhost")
     return host.split(":")[0].lower()
 
@@ -16,12 +16,11 @@ def _get_host(request: Request) -> str:
 async def get_current_domain(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> Domain:
-    host = _get_host(request)
+    host = get_request_host(request)
     result = await db.execute(select(Domain).where(Domain.name == host))
     domain = result.scalar_one_or_none()
     if domain:
         return domain
-    # Fallback to default domain
     result = await db.execute(select(Domain).where(Domain.is_default == True))
     domain = result.scalar_one_or_none()
     if domain:
@@ -29,7 +28,7 @@ async def get_current_domain(
     raise NotFoundError("域名")
 
 
-async def _has_domain_access(user: User, domain_id, db: AsyncSession) -> bool:
+async def has_domain_access(user: User, domain_id, db: AsyncSession) -> bool:
     if user.role == "admin":
         return True
     result = await db.execute(
@@ -46,6 +45,6 @@ async def require_domain_access(
     current_domain: Domain = Depends(get_current_domain),
     db: AsyncSession = Depends(get_db),
 ):
-    if not await _has_domain_access(current_user, current_domain.id, db):
+    if not await has_domain_access(current_user, current_domain.id, db):
         raise PermissionDeniedError("无权访问该域名")
     return current_domain

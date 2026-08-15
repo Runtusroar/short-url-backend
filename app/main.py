@@ -15,8 +15,10 @@ from app.core.exceptions import register_exception_handlers
 from app.core.rate_limit import rate_limit
 from app.core.security import decode_token
 from app.features.auth.router import router as auth_router
+from app.features.blacklist.router import router as blacklist_router
+from app.features.domains.router import router as domains_router
 from app.features.users.router import router as users_router
-from app.routers import domains, ip_blacklist, logs, redirect, short_links
+from app.routers import logs, redirect, short_links
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -72,8 +74,8 @@ app.include_router(auth_router)
 app.include_router(short_links.router, dependencies=[user_rate_limit])
 app.include_router(logs.router, dependencies=[user_rate_limit])
 app.include_router(users_router, dependencies=[user_rate_limit])
-app.include_router(ip_blacklist.router, dependencies=[user_rate_limit])
-app.include_router(domains.router, dependencies=[user_rate_limit])
+app.include_router(blacklist_router, dependencies=[user_rate_limit])
+app.include_router(domains_router, dependencies=[user_rate_limit])
 
 
 @app.get("/health/live")

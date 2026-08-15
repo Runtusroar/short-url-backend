@@ -1,6 +1,6 @@
 from starlette.requests import Request
 
-from app.domains import _get_host
+from app.features.domains.dependencies import get_request_host
 
 
 def make_request(host="public.example", x_forwarded_host=None):
@@ -24,4 +24,4 @@ def make_request(host="public.example", x_forwarded_host=None):
 def test_domain_resolution_ignores_x_forwarded_host():
     request = make_request(x_forwarded_host="attacker.example")
 
-    assert _get_host(request) == "public.example"
+    assert get_request_host(request) == "public.example"

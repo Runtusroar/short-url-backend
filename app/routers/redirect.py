@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.client_ip import get_client_ip
 from app.core.database import get_db
-from app.domains import _get_host
 from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.features.domains.dependencies import get_request_host
 from app.models import AccessLog, Domain, IpBlacklist, ShortLink, TargetUrl
 from app.services.geoip import get_country
 from app.services.redirect import get_redirect_target
@@ -56,7 +56,7 @@ async def _log_access(
 
 
 async def _resolve_domain(db: AsyncSession, request: Request) -> Domain:
-    host = _get_host(request)
+    host = get_request_host(request)
     result = await db.execute(select(Domain).where(Domain.name == host))
     domain = result.scalar_one_or_none()
     if domain and domain.is_active:

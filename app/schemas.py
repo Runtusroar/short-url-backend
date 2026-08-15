@@ -4,28 +4,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class DomainBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    is_active: bool = True
-    is_default: bool = False
-
-
-class DomainCreate(DomainBase):
-    pass
-
-
-class DomainUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    is_active: bool | None = None
-    is_default: bool | None = None
-
-
-class DomainResponse(DomainBase):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    created_at: datetime
-
-
 class TargetUrlBase(BaseModel):
     url: str
     url_type: str = Field(..., pattern="^(allowed|denied)$")
@@ -154,17 +132,3 @@ class DailyStatsResponse(BaseModel):
     allowed: int
     denied: int
     unique_ips: int
-
-
-class IpBlacklistCreate(BaseModel):
-    ip: str
-    reason: str | None = None
-
-
-class IpBlacklistResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    ip: str
-    reason: str | None
-    created_by: UUID | None
-    created_at: datetime

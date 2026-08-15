@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_staff
-from app.domains import require_domain_access
 from app.core.exceptions import APIError, ConflictError, NotFoundError, PermissionDeniedError
+from app.features.domains.dependencies import require_domain_access
 from app.models import AccessLog, AccessRule, Domain, ShortLink, ShortLinkPermission, TargetUrl, User, UserDomain
 from app.schemas import (
     AccessRuleCreate,
