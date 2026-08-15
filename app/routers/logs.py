@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.dependencies import get_current_user
 from app.domains import require_domain_access
-from app.exceptions import NotFoundError, PermissionDeniedError
+from app.core.database import get_db
+from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.core.security import get_current_user
 from app.models import AccessLog, Domain, ShortLink, ShortLinkPermission, User
 from app.schemas import AccessLogResponse, DailyStatsResponse
 

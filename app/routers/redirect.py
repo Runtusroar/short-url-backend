@@ -6,9 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.client_ip import get_client_ip
-from app.database import get_db
+from app.core.database import get_db
 from app.domains import _get_host
-from app.exceptions import NotFoundError, PermissionDeniedError
+from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models import AccessLog, Domain, IpBlacklist, ShortLink, TargetUrl
 from app.services.geoip import get_country
 from app.services.redirect import get_redirect_target

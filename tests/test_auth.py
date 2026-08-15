@@ -1,6 +1,6 @@
 import pytest
 
-from app.auth import create_access_token, decode_token, get_password_hash, verify_password
+from app.core.security import create_access_token, decode_token, get_password_hash, verify_password
 
 
 def test_password_hash():

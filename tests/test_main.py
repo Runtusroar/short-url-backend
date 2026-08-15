@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.config import settings
+from app.core.config import settings
 from app.main import app, lifespan
 
 

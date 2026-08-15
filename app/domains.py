@@ -2,9 +2,9 @@ from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
-from app.database import get_db
-from app.exceptions import NotFoundError, PermissionDeniedError
+from app.core.database import get_db
+from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.core.security import get_current_user
 from app.models import Domain, User, UserDomain
 
 
@@ -49,4 +49,3 @@ async def require_domain_access(
     if not await _has_domain_access(current_user, current_domain.id, db):
         raise PermissionDeniedError("无权访问该域名")
     return current_domain
-

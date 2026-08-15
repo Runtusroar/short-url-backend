@@ -12,9 +12,9 @@ from asgi_lifespan import LifespanManager
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import create_engine, text
 
-from app.auth import get_password_hash
-from app.config import settings
-from app.database import Base
+from app.core.config import settings
+from app.core.database import Base
+from app.core.security import get_password_hash
 from app.main import app
 
 _sync_url = settings.database_url.replace("+asyncpg", "+psycopg")

@@ -1,7 +1,7 @@
 import geoip2.database
 import geoip2.errors
 
-from app.config import settings
+from app.core.config import settings
 
 _geoip_reader: geoip2.database.Reader | None = None
 

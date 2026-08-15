@@ -3,13 +3,12 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import create_access_token, verify_password
-from app.config import settings
-from app.database import get_db
-from app.dependencies import get_current_user
-from app.exceptions import PermissionDeniedError, UnauthorizedError
+from app.core.config import settings
+from app.core.database import get_db
+from app.core.exceptions import PermissionDeniedError, UnauthorizedError
+from app.core.rate_limit import rate_limit
+from app.core.security import create_access_token, get_current_user, verify_password
 from app.models import User
-from app.rate_limit import rate_limit
 from app.schemas import Token, UserResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])

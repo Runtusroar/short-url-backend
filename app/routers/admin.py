@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_password_hash, require_admin
-from app.database import get_db
-from app.exceptions import ConflictError, NotFoundError
+from app.core.database import get_db
+from app.core.exceptions import ConflictError, NotFoundError
+from app.core.security import get_password_hash, require_admin
 from app.models import Domain, User, UserDomain
 from app.schemas import UserCreate, UserResponse
 

@@ -2,7 +2,7 @@ from ipaddress import ip_address
 
 from fastapi import Request
 
-from app.config import settings
+from app.core.config import settings
 
 
 def _normalize_ip(value: str | None) -> str | None:

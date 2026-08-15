@@ -8,12 +8,12 @@ from fastapi.responses import JSONResponse
 from fastapi_limiter import FastAPILimiter
 from sqlalchemy import text
 
-from app.auth import decode_token
-from app.config import settings
 from app.core.client_ip import get_client_ip
-from app.database import AsyncSessionLocal
-from app.exceptions import register_exception_handlers
-from app.rate_limit import rate_limit
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.core.exceptions import register_exception_handlers
+from app.core.rate_limit import rate_limit
+from app.core.security import decode_token
 from app.routers import admin, auth, domains, ip_blacklist, logs, redirect, short_links
 
 logging.basicConfig(level=settings.log_level)

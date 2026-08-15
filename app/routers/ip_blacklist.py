@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_staff
-from app.database import get_db
-from app.exceptions import ConflictError, NotFoundError
+from app.core.database import get_db
+from app.core.exceptions import ConflictError, NotFoundError
+from app.core.security import require_staff
 from app.models import IpBlacklist, User
 from app.schemas import IpBlacklistCreate, IpBlacklistResponse
 

@@ -1,9 +1,9 @@
 import pytest
 from starlette.requests import Request
 
-from app.config import settings
+from app.core.config import settings
 from app.core.client_ip import get_client_ip
-from app.rate_limit import rate_limit
+from app.core.rate_limit import rate_limit
 
 
 def make_request(
