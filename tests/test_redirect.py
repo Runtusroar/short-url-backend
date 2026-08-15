@@ -1,5 +1,5 @@
 from app.models import AccessRule
-from app.services.redirect import evaluate_rules, rule_matches, weighted_random_choice
+from app.features.redirect.service import evaluate_rules, rule_matches, weighted_random_choice
 
 
 class FakeTargetUrl:

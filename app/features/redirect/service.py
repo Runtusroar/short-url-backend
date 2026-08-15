@@ -1,11 +1,14 @@
+from datetime import datetime, timezone
 import fnmatch
 import random
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AccessRule, ShortLink, TargetUrl
+from app.core.exceptions import NotFoundError
+from app.models import AccessLog, AccessRule, Domain, IpBlacklist, ShortLink, TargetUrl
 
 
 def _match_list(value: str | None, candidates: list | None) -> bool:
@@ -101,4 +104,111 @@ async def get_redirect_target(
     )
     urls = result.scalars().all()
     target = weighted_random_choice(urls)
+    return action, target
+
+
+async def is_blacklisted(db: AsyncSession, ip: str) -> bool:
+    result = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == ip))
+    return result.scalar_one_or_none() is not None
+
+
+async def _log_access(
+    db: AsyncSession,
+    short_link: ShortLink,
+    domain: Domain,
+    target: TargetUrl | None,
+    result: str,
+    ip: str,
+    country: str | None,
+    ua_string: str | None,
+    platform: str | None,
+    referer: str | None,
+):
+    accessed_at = datetime.now(timezone.utc)
+    plus8_date = accessed_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    dedup_bucket = int(accessed_at.timestamp() // 30) * 30
+    log = AccessLog(
+        short_link_id=short_link.id,
+        domain_id=domain.id,
+        target_url_id=target.id if target else None,
+        result=result,
+        ip=ip,
+        country=country,
+        ua_string=ua_string,
+        ua_platform=platform,
+        referer=referer,
+        accessed_at=accessed_at,
+        accessed_at_plus8=plus8_date,
+        dedup_bucket=dedup_bucket,
+    )
+    db.add(log)
+    await db.commit()
+
+
+async def _resolve_domain(db: AsyncSession, host: str) -> Domain:
+    result = await db.execute(select(Domain).where(Domain.name == host))
+    domain = result.scalar_one_or_none()
+    if domain and domain.is_active:
+        return domain
+    result = await db.execute(select(Domain).where(Domain.is_default == True))
+    domain = result.scalar_one_or_none()
+    if domain and domain.is_active:
+        return domain
+    raise NotFoundError("域名")
+
+
+async def resolve_domain_and_link(
+    db: AsyncSession,
+    host: str,
+    short_code: str,
+) -> tuple[Domain, ShortLink]:
+    domain = await _resolve_domain(db, host)
+
+    result = await db.execute(
+        select(ShortLink).where(
+            ShortLink.domain_id == domain.id,
+            ShortLink.short_code == short_code,
+            ShortLink.is_active == True,
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise NotFoundError("短链")
+    return domain, link
+
+
+async def select_and_log_redirect(
+    db: AsyncSession,
+    link: ShortLink,
+    domain: Domain,
+    ip: str,
+    country: str | None,
+    ua_string: str | None,
+    platform: str | None,
+    referer: str | None,
+    blacklisted: bool,
+    is_proxy: bool,
+) -> tuple[str, TargetUrl | None]:
+    action, target = await get_redirect_target(
+        db,
+        link,
+        country,
+        platform,
+        referer,
+        blacklisted,
+        is_proxy,
+    )
+
+    await _log_access(
+        db,
+        link,
+        domain,
+        target,
+        action,
+        ip,
+        country,
+        ua_string,
+        platform,
+        referer,
+    )
     return action, target

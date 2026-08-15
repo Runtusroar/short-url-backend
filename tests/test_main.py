@@ -93,17 +93,26 @@ async def test_redis_enabled_lifespan_initializes_stores_and_closes_client(monke
 
     redis_client = FakeRedis()
 
-    def fake_from_url(url, *, encoding, decode_responses):
+    def fake_create_redis_client(url):
         assert url == "redis://test/0"
-        assert encoding == "utf-8"
-        assert decode_responses is True
         return redis_client
+
+    async def fake_close_redis_client(client):
+        assert client is redis_client
+        await client.aclose()
 
     async def fake_limiter_init(client):
         initialized_clients.append(client)
 
     monkeypatch.setattr(settings, "redis_url", "redis://test/0")
-    monkeypatch.setattr("app.main.redis.from_url", fake_from_url)
+    monkeypatch.setattr(
+        "app.integrations.redis.create_redis_client",
+        fake_create_redis_client,
+    )
+    monkeypatch.setattr(
+        "app.integrations.redis.close_redis_client",
+        fake_close_redis_client,
+    )
     monkeypatch.setattr(
         "app.main.FastAPILimiter.init",
         staticmethod(fake_limiter_init),
@@ -120,11 +129,14 @@ async def test_redis_enabled_lifespan_initializes_stores_and_closes_client(monke
 
 
 async def test_redis_disabled_lifespan_keeps_state_none(monkeypatch):
-    def unexpected_from_url(*args, **kwargs):
+    def unexpected_create_redis_client(*args, **kwargs):
         raise AssertionError("Redis must not be initialized when disabled")
 
     monkeypatch.setattr(settings, "redis_url", "")
-    monkeypatch.setattr("app.main.redis.from_url", unexpected_from_url)
+    monkeypatch.setattr(
+        "app.integrations.redis.create_redis_client",
+        unexpected_create_redis_client,
+    )
     test_app = FastAPI()
 
     async with lifespan(test_app):

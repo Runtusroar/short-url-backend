@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
 
-import redis.asyncio as redis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,7 +19,8 @@ from app.features.blacklist.router import router as blacklist_router
 from app.features.domains.router import router as domains_router
 from app.features.short_links.router import router as short_links_router
 from app.features.users.router import router as users_router
-from app.routers import redirect
+from app.features.redirect.router import router as redirect_router
+from app.integrations import redis as redis_integration
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ async def _ip_identifier(request: Request) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.redis_url:
-        r = redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+        r = redis_integration.create_redis_client(settings.redis_url)
         await FastAPILimiter.init(r)
         app.state.redis = r
     else:
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
         app.state.redis = None
     yield
     if r:
-        await r.aclose()
+        await redis_integration.close_redis_client(r)
     app.state.redis = None
 
 
@@ -116,4 +116,4 @@ async def readiness(request: Request):
     return {"status": "ready", "checks": checks}
 
 
-app.include_router(redirect.router, dependencies=[ip_rate_limit])
+app.include_router(redirect_router, dependencies=[ip_rate_limit])

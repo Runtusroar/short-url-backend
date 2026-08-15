@@ -14,4 +14,3 @@ def get_platform(ua_string: str | None) -> str | None:
     if ua.is_pc:
         return "pc"
     return "other"
-

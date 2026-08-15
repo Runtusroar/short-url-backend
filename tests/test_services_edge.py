@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.geoip import get_country, get_geoip_reader
-from app.services.redirect import (
+from app.integrations.maxmind.country import get_country, get_geoip_reader
+from app.features.redirect.service import (
     _match_list,
     _match_referer,
     evaluate_rules,
@@ -13,7 +13,7 @@ from app.services.redirect import (
     weighted_random_choice,
 )
 from app.features.short_links.short_code import validate_custom_alias
-from app.services.ua import get_platform
+from app.features.redirect.ua import get_platform
 
 
 # -----------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def test_bot_detection_precedes_pc_detection(monkeypatch):
         is_tablet = False
         is_pc = True
 
-    monkeypatch.setattr("app.services.ua.parse", lambda value: BotThatLooksLikePc())
+    monkeypatch.setattr("app.features.redirect.ua.parse", lambda value: BotThatLooksLikePc())
     assert get_platform("spoofed-bot") == "bot"
 
 
@@ -47,7 +47,7 @@ def test_bot_detection_precedes_pc_detection(monkeypatch):
 
 
 def test_geoip_without_reader():
-    with patch("app.services.geoip.settings") as mock_settings:
+    with patch("app.integrations.maxmind.country.settings") as mock_settings:
         mock_settings.geoip_db_path = None
         assert get_geoip_reader() is None
         assert get_country("8.8.8.8") is None
@@ -56,7 +56,7 @@ def test_geoip_without_reader():
 def test_geoip_invalid_ip():
     reader = MagicMock()
     reader.city.side_effect = ValueError("invalid ip")
-    with patch("app.services.geoip.get_geoip_reader", return_value=reader):
+    with patch("app.integrations.maxmind.country.get_geoip_reader", return_value=reader):
         assert get_country("not-an-ip") is None
 
 
