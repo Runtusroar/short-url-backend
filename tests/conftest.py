@@ -3,7 +3,7 @@ import uuid
 
 os.environ.setdefault("REDIS_URL", "")
 os.environ.setdefault(
-    "DATABASE_URL", "postgresql+psycopg://shorturl:shorturl@localhost:5432/shorturl_test"
+    "DATABASE_URL", "postgresql+psycopg://shorturl:shorturl@localhost:18543/shorturl_test"
 )
 
 import pytest
