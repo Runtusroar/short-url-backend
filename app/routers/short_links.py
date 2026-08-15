@@ -102,6 +102,13 @@ async def create_short_link(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_staff),
 ):
+    domain = await db.execute(select(Domain).where(Domain.id == payload.domain_id))
+    domain = domain.scalar_one_or_none()
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain not found")
+    if not domain.is_active:
+        raise HTTPException(status_code=400, detail="Domain is inactive")
+
     if not await _has_domain(current_user, payload.domain_id, db):
         raise HTTPException(status_code=403, detail="No access to this domain")
 
