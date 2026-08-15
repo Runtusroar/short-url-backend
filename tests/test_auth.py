@@ -21,7 +21,7 @@ def test_decode_invalid_token():
 
 
 async def test_login_cookie_uses_configured_secure_flag(client, monkeypatch):
-    monkeypatch.setattr("app.routers.auth.settings.cookie_secure", True)
+    monkeypatch.setattr("app.features.auth.router.settings.cookie_secure", True)
     response = await client.post(
         "/api/auth/login-cookie",
         data={"username": "admin", "password": "admin123"},

@@ -1,41 +1,25 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.core.exceptions import ConflictError, NotFoundError
-from app.core.security import get_password_hash, require_admin
+from app.core.security import get_password_hash
+from app.features.users.schemas import UserCreate
 from app.models import Domain, User, UserDomain
-from app.schemas import UserCreate, UserResponse
-
-router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-@router.get("/users", response_model=list[UserResponse])
-async def list_users(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
+async def list_users(db: AsyncSession) -> list[User]:
     result = await db.execute(select(User).order_by(User.created_at.desc()))
     return result.scalars().all()
 
 
-@router.post("/users", response_model=UserResponse)
-async def create_user(
-    payload: UserCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
+async def create_user(db: AsyncSession, payload: UserCreate) -> User:
     existing = await db.execute(select(User).where(User.username == payload.username))
     if existing.scalar_one_or_none():
         raise ConflictError("用户名已存在")
 
-    for domain_id in payload.domain_ids:
-        domain = await db.execute(select(Domain).where(Domain.id == domain_id))
-        if not domain.scalar_one_or_none():
-            raise NotFoundError("指定域名")
+    await _validate_domains(db, payload.domain_ids)
 
     user = User(
         username=payload.username,
@@ -53,27 +37,17 @@ async def create_user(
     return user
 
 
-@router.put("/users/{user_id}", response_model=UserResponse)
-async def update_user(
-    user_id: UUID,
-    payload: UserCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
+async def update_user(db: AsyncSession, user_id: UUID, payload: UserCreate) -> User:
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise NotFoundError("用户")
 
-    # Check username uniqueness excluding current user
     existing = await db.execute(select(User).where(User.username == payload.username, User.id != user_id))
     if existing.scalar_one_or_none():
         raise ConflictError("用户名已存在")
 
-    for domain_id in payload.domain_ids:
-        domain = await db.execute(select(Domain).where(Domain.id == domain_id))
-        if not domain.scalar_one_or_none():
-            raise NotFoundError("指定域名")
+    await _validate_domains(db, payload.domain_ids)
 
     user.username = payload.username
     user.password_hash = get_password_hash(payload.password)
@@ -88,16 +62,17 @@ async def update_user(
     return user
 
 
-@router.delete("/users/{user_id}")
-async def delete_user(
-    user_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
+async def delete_user(db: AsyncSession, user_id: UUID) -> None:
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise NotFoundError("用户")
     await db.delete(user)
     await db.commit()
-    return {"detail": "Deleted"}
+
+
+async def _validate_domains(db: AsyncSession, domain_ids: list[UUID]) -> None:
+    for domain_id in domain_ids:
+        domain = await db.execute(select(Domain).where(Domain.id == domain_id))
+        if not domain.scalar_one_or_none():
+            raise NotFoundError("指定域名")

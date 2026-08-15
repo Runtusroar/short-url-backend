@@ -1,21 +1,17 @@
 from fastapi import APIRouter, Depends, Response
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import PermissionDeniedError, UnauthorizedError
 from app.core.rate_limit import rate_limit
-from app.core.security import create_access_token, get_current_user, verify_password
+from app.core.security import get_current_user
+from app.features.auth.schemas import Token
+from app.features.auth.service import authenticate_user, issue_token
+from app.features.users.schemas import UserResponse
 from app.models import User
-from app.schemas import Token, UserResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def _issue_token(user: User) -> str:
-    return create_access_token({"sub": str(user.id)})
 
 
 @router.post("/login", response_model=Token, dependencies=[rate_limit(times=60, seconds=60)])
@@ -23,14 +19,8 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.username == form_data.username))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(form_data.password, user.password_hash):
-        raise UnauthorizedError("用户名或密码错误")
-    if not user.is_active:
-        raise PermissionDeniedError("用户已停用")
-    token = _issue_token(user)
-    return {"access_token": token}
+    user = await authenticate_user(db, form_data.username, form_data.password)
+    return {"access_token": issue_token(user)}
 
 
 @router.post("/login-cookie", response_model=UserResponse, dependencies=[rate_limit(times=60, seconds=60)])
@@ -39,17 +29,10 @@ async def login_cookie(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.username == form_data.username))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(form_data.password, user.password_hash):
-        raise UnauthorizedError("用户名或密码错误")
-    if not user.is_active:
-        raise PermissionDeniedError("用户已停用")
-
-    token = _issue_token(user)
+    user = await authenticate_user(db, form_data.username, form_data.password)
     response.set_cookie(
         key="access_token",
-        value=token,
+        value=issue_token(user),
         httponly=True,
         max_age=settings.access_token_expire_minutes * 60,
         samesite="lax",
