@@ -74,6 +74,7 @@ class ShortLink(Base):
     owner = relationship("User")
     target_urls = relationship("TargetUrl", cascade="all, delete-orphan", lazy="selectin")
     access_rules = relationship("AccessRule", cascade="all, delete-orphan", lazy="selectin")
+    permissions = relationship("ShortLinkPermission", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (UniqueConstraint("domain_id", "short_code", name="uq_domain_short_code"),)
 

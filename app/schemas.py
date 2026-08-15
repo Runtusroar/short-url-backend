@@ -131,11 +131,6 @@ class ShortLinkResponse(BaseModel):
     updated_at: datetime
 
 
-class ShortLinkDetail(ShortLinkResponse):
-    target_urls: list[TargetUrlResponse]
-    access_rules: list[AccessRuleResponse]
-
-
 class ShortLinkPermissionCreate(BaseModel):
     user_id: UUID
 
@@ -146,6 +141,12 @@ class ShortLinkPermissionResponse(BaseModel):
     short_link_id: UUID
     user_id: UUID
     created_at: datetime
+
+
+class ShortLinkDetail(ShortLinkResponse):
+    target_urls: list[TargetUrlResponse]
+    access_rules: list[AccessRuleResponse]
+    permissions: list[ShortLinkPermissionResponse] = []
 
 
 class AccessLogResponse(BaseModel):
