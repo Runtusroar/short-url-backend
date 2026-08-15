@@ -148,7 +148,7 @@ async def create_short_link(
         short_code=short_code,
         is_custom_alias=bool(payload.custom_alias),
         description=payload.description,
-        default_action="allow",
+        default_action="deny",
         owner_id=current_user.id,
     )
     db.add(link)

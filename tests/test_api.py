@@ -39,6 +39,16 @@ async def _add_target_url(client: AsyncClient, token: str, link_id: str, url: st
     return resp.json()
 
 
+async def _add_allow_rule(client: AsyncClient, token: str, link_id: str) -> dict:
+    resp = await client.post(
+        f"/api/short-links/{link_id}/rules",
+        headers={**_auth(token), **_host()},
+        json={"action": "allow", "priority": 0},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -386,6 +396,7 @@ async def test_access_rule_crud(client, admin_token, default_domain):
 async def test_redirect_to_target(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
     await _add_target_url(client, admin_token, link["id"], "https://redirect.example.com")
+    await _add_allow_rule(client, admin_token, link["id"])
 
     resp = await client.get(
         f"/{link['short_code']}",
@@ -421,6 +432,7 @@ async def test_redirect_denied_by_rule(client, admin_token, default_domain):
 async def test_logs_and_daily_stats(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
     await _add_target_url(client, admin_token, link["id"], "https://stats.example.com")
+    await _add_allow_rule(client, admin_token, link["id"])
 
     for _ in range(3):
         await client.get(
@@ -650,8 +662,8 @@ async def test_redirect_no_target_url(client, admin_token, default_domain):
         headers=_host(),
         follow_redirects=False,
     )
-    assert resp.status_code == 404
-    assert resp.json()["code"] == "NOT_FOUND"
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "PERMISSION_DENIED"
 
 
 async def test_login_disabled_user(client, admin_token):
