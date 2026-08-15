@@ -1,27 +1,34 @@
 """Redirect service edge case tests."""
 
 from uuid import uuid4
-from unittest.mock import MagicMock
 
 import pytest
 
 from app.core.exceptions import PermissionDeniedError
-from app.models import AccessRule, Domain, ShortLink
 from app.features.redirect import service
 from app.features.redirect.service import (
     _match_list,
     _match_referer,
-    execute_redirect,
     evaluate_rules,
+    execute_redirect,
+    get_redirect_target,
     rule_matches,
     weighted_random_choice,
 )
 from app.features.redirect.ua import get_platform
+from app.models import AccessRule, Domain, ShortLink, TargetUrl
+from app.models.enums import DecisionReason, RedirectResult
 
 
 def test_ua_platform_variants():
-    assert get_platform("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/...") == "tablet"
-    assert get_platform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/...") == "pc"
+    assert (
+        get_platform("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/...")
+        == "tablet"
+    )
+    assert (
+        get_platform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/...")
+        == "pc"
+    )
     assert get_platform("Googlebot/2.1 (+http://www.google.com/bot.html)") == "bot"
     assert get_platform("SomeObscureDevice/1.0") == "other"
     assert get_platform("") is None
@@ -35,7 +42,9 @@ def test_bot_detection_precedes_pc_detection(monkeypatch):
         is_tablet = False
         is_pc = True
 
-    monkeypatch.setattr("app.features.redirect.ua.parse", lambda value: BotThatLooksLikePc())
+    monkeypatch.setattr(
+        "app.features.redirect.ua.parse", lambda value: BotThatLooksLikePc()
+    )
     assert get_platform("spoofed-bot") == "bot"
 
 
@@ -45,24 +54,33 @@ def test_match_list_empty_candidates():
 
 
 def test_match_referer_pattern():
-    assert _match_referer("https://example.com/foo", "https://example.com/*") is True
-    assert _match_referer(None, "https://example.com/*") is False
+    assert _match_referer("https://example.com/foo", ["https://example.com/*"]) is True
+    assert _match_referer(None, ["https://example.com/*"]) is False
     assert _match_referer("https://example.com/foo", None) is True
 
 
 def test_match_referer_multiple_patterns():
-    assert _match_referer("https://facebook.com/foo", "*facebook*,*tiktok*") is True
-    assert _match_referer("https://www.tiktok.com/foo", "*facebook*,*tiktok*") is True
-    assert _match_referer("https://google.com/foo", "*facebook*,*tiktok*") is False
+    assert (
+        _match_referer("https://facebook.com/foo", ["*facebook*", "*tiktok*"]) is True
+    )
+    assert (
+        _match_referer("https://www.tiktok.com/foo", ["*facebook*", "*tiktok*"]) is True
+    )
+    assert _match_referer("https://google.com/foo", ["*facebook*", "*tiktok*"]) is False
 
 
 def test_rule_matches_all_conditions():
-    rule = MagicMock()
-    rule.countries = ["CN"]
-    rule.ua_platforms = ["mobile"]
-    rule.referer_pattern = "https://example.com/*"
-    rule.allow_proxy = True
-    rule.allow_bot = True
+    rule = AccessRule(
+        name="all conditions",
+        action="allow",
+        priority=0,
+        countries=["CN"],
+        ua_platforms=["mobile"],
+        referer_patterns=["https://example.com/*"],
+        client_requirement="human",
+        proxy_requirement="non_proxy",
+        is_active=True,
+    )
 
     assert rule_matches(rule, "CN", "mobile", "https://example.com/foo", False) is True
     assert rule_matches(rule, "US", "mobile", "https://example.com/foo", False) is False
@@ -71,48 +89,151 @@ def test_rule_matches_all_conditions():
 
 
 def test_evaluate_rules_priority():
-    deny = MagicMock()
-    deny.is_active = True
-    deny.priority = 1
-    deny.action = "deny"
-    deny.countries = deny.ua_platforms = None
-    deny.referer_pattern = None
-    deny.allow_proxy = True
-    deny.allow_bot = True
-
-    allow = MagicMock()
-    allow.is_active = True
-    allow.priority = 2
-    allow.action = "allow"
-    allow.countries = allow.ua_platforms = None
-    allow.referer_pattern = None
-    allow.allow_proxy = True
-    allow.allow_bot = True
-
-    short_link = MagicMock()
-    short_link.default_action = "allow"
-    assert evaluate_rules([allow, deny], short_link, None, None, None, False) == "deny"
+    deny = AccessRule(
+        name="deny",
+        action="deny",
+        priority=1,
+        countries=[],
+        ua_platforms=[],
+        referer_patterns=[],
+        client_requirement="any",
+        proxy_requirement="any",
+        is_active=True,
+    )
+    allow = AccessRule(
+        name="allow",
+        action="allow",
+        priority=2,
+        countries=[],
+        ua_platforms=[],
+        referer_patterns=[],
+        client_requirement="any",
+        proxy_requirement="any",
+        is_active=True,
+    )
+    short_link = ShortLink(default_action="allow")
+    action, matched_rule = evaluate_rules(
+        [allow, deny], short_link, None, None, None, False
+    )
+    assert action == "deny"
+    assert matched_rule is deny
 
 
 def test_evaluate_rules_inactive_ignored():
-    inactive = MagicMock()
-    inactive.is_active = False
-    inactive.priority = 1
-    inactive.action = "deny"
-    inactive.countries = inactive.ua_platforms = inactive.referer_pattern = None
-    inactive.allow_proxy = True
-    inactive.allow_bot = True
-
-    short_link = MagicMock()
-    short_link.default_action = "allow"
-    assert evaluate_rules([inactive], short_link, None, None, None, False) == "allow"
+    inactive = AccessRule(
+        name="inactive",
+        action="deny",
+        priority=1,
+        countries=[],
+        ua_platforms=[],
+        referer_patterns=[],
+        is_active=False,
+    )
+    short_link = ShortLink(default_action="allow")
+    action, matched_rule = evaluate_rules(
+        [inactive], short_link, None, None, None, False
+    )
+    assert action == "allow"
+    assert matched_rule is None
 
 
 def test_weighted_random_choice_excludes_non_positive_weights():
-    url = MagicMock()
-    url.is_active = True
-    url.weight = 0
+    class Target:
+        is_active = True
+        weight = 0
+
+    url = Target()
     assert weighted_random_choice([url]) is None
+
+
+async def test_redirect_decision_distinguishes_matched_default_blacklist_and_no_target():
+    link = ShortLink(id=uuid4(), default_action="allow")
+    matched_rule = AccessRule(
+        id=uuid4(),
+        short_link_id=link.id,
+        name="matched",
+        action="allow",
+        priority=0,
+        countries=[],
+        ua_platforms=[],
+        referer_patterns=[],
+        client_requirement="any",
+        proxy_requirement="any",
+        is_active=True,
+    )
+    allowed_target = TargetUrl(
+        short_link_id=link.id,
+        url="https://allowed.example",
+        url_type="allowed",
+        weight=1,
+        is_active=True,
+    )
+    matched = await get_redirect_target(
+        _RecordingSession(
+            [
+                _QueryResult(values=[matched_rule]),
+                _QueryResult(values=[allowed_target]),
+            ],
+            [],
+        ),
+        link,
+        None,
+        None,
+        None,
+        False,
+        False,
+    )
+    assert matched.result == RedirectResult.ALLOWED
+    assert matched.reason == DecisionReason.MATCHED_RULE
+    assert matched.matched_rule is matched_rule
+    assert matched.target is allowed_target
+
+    denied_target = TargetUrl(
+        short_link_id=link.id,
+        url="https://denied.example",
+        url_type="denied",
+        weight=1,
+        is_active=True,
+    )
+    default = await get_redirect_target(
+        _RecordingSession(
+            [_QueryResult(values=[]), _QueryResult(values=[denied_target])], []
+        ),
+        ShortLink(id=link.id, default_action="deny"),
+        None,
+        None,
+        None,
+        False,
+        False,
+    )
+    assert default.result == RedirectResult.DENIED
+    assert default.reason == DecisionReason.DEFAULT_ACTION
+    assert default.matched_rule is None
+
+    blacklisted = await get_redirect_target(
+        _RecordingSession([_QueryResult(values=[denied_target])], []),
+        link,
+        None,
+        None,
+        None,
+        True,
+        False,
+    )
+    assert blacklisted.result == RedirectResult.BLOCKED
+    assert blacklisted.reason == DecisionReason.BLACKLIST
+
+    no_target = await get_redirect_target(
+        _RecordingSession([_QueryResult(values=[]), _QueryResult(values=[])], []),
+        link,
+        None,
+        None,
+        None,
+        False,
+        False,
+    )
+    assert no_target.result == RedirectResult.ALLOWED
+    assert no_target.reason == DecisionReason.NO_TARGET
+    assert no_target.target is None
 
 
 class _ScalarRows:
@@ -155,7 +276,9 @@ class _RecordingSession:
         self.commits += 1
 
 
-async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error(monkeypatch):
+async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error(
+    monkeypatch,
+):
     domain = Domain(id=uuid4(), name="test.local", is_active=True, is_default=True)
     link = ShortLink(
         id=uuid4(),
@@ -170,8 +293,9 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
         priority=0,
         countries=["CN"],
         ua_platforms=[],
-        allow_bot=True,
-        allow_proxy=False,
+        referer_patterns=[],
+        client_requirement="any",
+        proxy_requirement="non_proxy",
         is_active=True,
     )
     events = []
@@ -234,5 +358,8 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
     assert log.ua_platform == "bot"
     assert log.referer == "https://source.example/path"
     assert log.accessed_at.tzinfo is not None
-    assert log.accessed_at_plus8 == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
+    assert (
+        log.accessed_at_plus8
+        == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
+    )
     assert log.dedup_bucket == int(log.accessed_at.timestamp() // 30) * 30

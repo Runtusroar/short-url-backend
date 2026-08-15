@@ -1,82 +1,108 @@
+from uuid import UUID
+
+from app.features.redirect.service import (
+    evaluate_rules,
+    rule_matches,
+    weighted_random_choice,
+)
 from app.models import AccessRule
-from app.features.redirect.service import evaluate_rules, rule_matches, weighted_random_choice
 
 
 class FakeTargetUrl:
-    def __init__(self, url, weight=1, is_active=True):
+    def __init__(self, url: str, weight: int = 1, is_active: bool = True):
         self.url = url
         self.weight = weight
         self.is_active = is_active
 
 
 class FakeShortLink:
-    def __init__(self, default_action="allow"):
+    def __init__(self, default_action: str = "allow"):
         self.default_action = default_action
 
 
-def _rule(**kwargs):
-    defaults = {"is_active": True}
+def _rule(**kwargs) -> AccessRule:
+    defaults = {
+        "name": "test rule",
+        "action": "allow",
+        "priority": 0,
+        "countries": [],
+        "ua_platforms": [],
+        "referer_patterns": [],
+        "client_requirement": "any",
+        "proxy_requirement": "any",
+        "is_active": True,
+    }
     defaults.update(kwargs)
     return AccessRule(**defaults)
 
 
-def test_rule_matches_country():
-    rule = _rule(countries=["CN"], ua_platforms=[], referer_pattern=None)
-    assert rule_matches(rule, "CN", "pc", "https://example.com", False) is True
-    assert rule_matches(rule, "US", "pc", "https://example.com", False) is False
+def test_rule_requires_human_and_non_proxy_together():
+    rule = _rule(client_requirement="human", proxy_requirement="non_proxy")
+
+    assert rule_matches(rule, None, "bot", None, True) is False
+    assert rule_matches(rule, None, "pc", None, True) is False
+    assert rule_matches(rule, None, "pc", None, False) is True
 
 
-def test_rule_matches_platform():
-    rule = _rule(countries=[], ua_platforms=["mobile"], referer_pattern=None)
-    assert rule_matches(rule, "CN", "mobile", None, False) is True
-    assert rule_matches(rule, "CN", "pc", None, False) is False
+def test_rule_matches_bot_only_requirement():
+    rule = _rule(client_requirement="bot")
+
+    assert rule_matches(rule, None, "bot", None, False) is True
+    assert rule_matches(rule, None, "pc", None, False) is False
 
 
-def test_rule_matches_bot_allowed():
-    rule = _rule(countries=[], ua_platforms=[], allow_bot=True)
-    assert rule_matches(rule, "CN", "bot", None, False) is True
+def test_rule_matches_proxy_only_requirement():
+    rule = _rule(proxy_requirement="proxy")
+
+    assert rule_matches(rule, None, "pc", None, True) is True
+    assert rule_matches(rule, None, "pc", None, False) is False
 
 
-def test_rule_matches_bot_denied():
-    rule = _rule(countries=[], ua_platforms=[], allow_bot=False)
-    assert rule_matches(rule, "CN", "bot", None, False) is False
+def test_rule_matches_country_platform_and_any_referer_pattern():
+    rule = _rule(
+        countries=["CN"],
+        ua_platforms=["mobile"],
+        referer_patterns=["*facebook*", "*tiktok*"],
+    )
+
+    assert rule_matches(rule, "cn", "mobile", "https://facebook.com/a", False) is True
+    assert rule_matches(rule, "US", "mobile", "https://facebook.com/a", False) is False
+    assert rule_matches(rule, "CN", "pc", "https://facebook.com/a", False) is False
+    assert rule_matches(rule, "CN", "mobile", "https://google.com/a", False) is False
 
 
-def test_bot_assumed_proxy_requires_proxy_permission():
-    rule = _rule(countries=[], ua_platforms=[], allow_bot=True, allow_proxy=False)
-    assert not rule_matches(rule, None, "bot", None, is_proxy=True)
+def test_evaluate_rules_ignores_inactive_rule_and_returns_default_without_match():
+    inactive = _rule(action="deny", is_active=False)
+
+    action, matched_rule = evaluate_rules(
+        [inactive], FakeShortLink("deny"), None, None, None, False
+    )
+
+    assert action == "deny"
+    assert matched_rule is None
 
 
-def test_rule_matches_proxy_allowed():
-    rule = _rule(countries=[], ua_platforms=[], allow_proxy=True)
-    assert rule_matches(rule, "CN", "pc", None, True) is True
+def test_evaluate_rules_uses_priority_then_id_for_matching_rule():
+    earlier = _rule(
+        id=UUID("00000000-0000-0000-0000-000000000001"), name="first", action="deny"
+    )
+    later = _rule(
+        id=UUID("00000000-0000-0000-0000-000000000002"), name="second", action="allow"
+    )
+
+    action, matched_rule = evaluate_rules(
+        [later, earlier], FakeShortLink(), None, None, None, False
+    )
+
+    assert action == "deny"
+    assert matched_rule is earlier
 
 
-def test_rule_matches_proxy_denied():
-    rule = _rule(countries=[], ua_platforms=[], allow_proxy=False)
-    assert rule_matches(rule, "CN", "pc", None, True) is False
+def test_weighted_random_choice_ignores_inactive_and_non_positive_weights():
+    urls = [
+        FakeTargetUrl("inactive", is_active=False),
+        FakeTargetUrl("zero", weight=0),
+        FakeTargetUrl("active"),
+    ]
 
-
-def test_evaluate_rules_priority():
-    rule1 = _rule(action="deny", priority=0, countries=["CN"])
-    rule2 = _rule(action="allow", priority=1, countries=["CN"])
-    assert evaluate_rules([rule1, rule2], FakeShortLink(), "CN", "pc", None, False) == "deny"
-
-
-def test_evaluate_rules_default_allow():
-    assert evaluate_rules([], FakeShortLink("allow"), "CN", "pc", None, False) == "allow"
-
-
-def test_evaluate_rules_default_deny():
-    assert evaluate_rules([], FakeShortLink("deny"), "CN", "pc", None, False) == "deny"
-
-
-def test_weighted_random_choice_respects_weight():
-    urls = [FakeTargetUrl("a", weight=10), FakeTargetUrl("b", weight=0)]
-    for _ in range(10):
-        assert weighted_random_choice(urls).url == "a"
-
-
-def test_weighted_random_choice_inactive_ignored():
-    urls = [FakeTargetUrl("a", is_active=False), FakeTargetUrl("b")]
-    assert weighted_random_choice(urls).url == "b"
+    assert weighted_random_choice(urls).url == "active"

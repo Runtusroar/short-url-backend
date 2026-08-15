@@ -3,14 +3,13 @@
 import uuid
 
 import pytest
+from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import text
-from httpx import AsyncClient
 
 from app.core.security import get_password_hash
 from app.features.short_links.schemas import ShortLinkCreate
 from tests.conftest import _sync_engine
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,7 +34,9 @@ async def _create_short_link(client: AsyncClient, token: str, domain_id: str) ->
     return resp.json()
 
 
-async def _add_target_url(client: AsyncClient, token: str, link_id: str, url: str = "https://example.com") -> dict:
+async def _add_target_url(
+    client: AsyncClient, token: str, link_id: str, url: str = "https://example.com"
+) -> dict:
     resp = await client.post(
         f"/api/short-links/{link_id}/urls",
         headers={**_auth(token), **_host()},
@@ -49,7 +50,7 @@ async def _add_allow_rule(client: AsyncClient, token: str, link_id: str) -> dict
     resp = await client.post(
         f"/api/short-links/{link_id}/rules",
         headers={**_auth(token), **_host()},
-        json={"action": "allow", "priority": 0},
+        json={"name": "allow redirect", "action": "allow", "priority": 0},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -89,7 +90,10 @@ async def test_short_legacy_username_can_log_in_after_normalization(client):
                 VALUES (:id, 'xy', :password_hash, 'client', true, now(), now())
                 """
             ),
-            {"id": str(uuid.uuid4()), "password_hash": get_password_hash("legacy-password")},
+            {
+                "id": str(uuid.uuid4()),
+                "password_hash": get_password_hash("legacy-password"),
+            },
         )
     response = await client.post(
         "/api/auth/login",
@@ -98,7 +102,9 @@ async def test_short_legacy_username_can_log_in_after_normalization(client):
     assert response.status_code == 200
 
 
-async def test_short_legacy_username_is_returned_by_admin_user_list(client, admin_token):
+async def test_short_legacy_username_is_returned_by_admin_user_list(
+    client, admin_token
+):
     with _sync_engine.begin() as connection:
         connection.execute(
             text(
@@ -107,7 +113,10 @@ async def test_short_legacy_username_is_returned_by_admin_user_list(client, admi
                 VALUES (:id, 'xz', :password_hash, 'client', true, now(), now())
                 """
             ),
-            {"id": str(uuid.uuid4()), "password_hash": get_password_hash("legacy-password")},
+            {
+                "id": str(uuid.uuid4()),
+                "password_hash": get_password_hash("legacy-password"),
+            },
         )
     response = await client.get("/api/admin/users", headers=_auth(admin_token))
     assert response.status_code == 200
@@ -208,7 +217,9 @@ async def test_domain_deactivates_without_removing_row(client, admin_token):
     assert resp.status_code == 200
     assert resp.json()["name"] == "cycle-renamed.test"
 
-    resp = await client.delete(f"/api/domains/{domain['id']}", headers=_auth(admin_token))
+    resp = await client.delete(
+        f"/api/domains/{domain['id']}", headers=_auth(admin_token)
+    )
     assert resp.status_code == 200
 
     resp = await client.get(f"/api/domains/{domain['id']}", headers=_auth(admin_token))
@@ -264,7 +275,12 @@ async def test_admin_user_crud(client, admin_token):
     resp = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "newop", "password": "password", "role": "operator", "domain_ids": []},
+        json={
+            "username": "newop",
+            "password": "password",
+            "role": "operator",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 200
     user = resp.json()
@@ -277,12 +293,19 @@ async def test_admin_user_crud(client, admin_token):
     resp = await client.put(
         f"/api/admin/users/{user['id']}",
         headers=_auth(admin_token),
-        json={"username": "newop2", "password": "password2", "role": "client", "domain_ids": []},
+        json={
+            "username": "newop2",
+            "password": "password2",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["username"] == "newop2"
 
-    resp = await client.delete(f"/api/admin/users/{user['id']}", headers=_auth(admin_token))
+    resp = await client.delete(
+        f"/api/admin/users/{user['id']}", headers=_auth(admin_token)
+    )
     assert resp.status_code == 200
 
     resp = await client.get("/api/admin/users", headers=_auth(admin_token))
@@ -294,14 +317,24 @@ async def test_duplicate_username_conflict(client, admin_token):
     resp = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "dupuser", "password": "password", "role": "client", "domain_ids": []},
+        json={
+            "username": "dupuser",
+            "password": "password",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 200
 
     resp = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "dupuser", "password": "password", "role": "client", "domain_ids": []},
+        json={
+            "username": "dupuser",
+            "password": "password",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 409
 
@@ -328,7 +361,9 @@ async def test_create_user_rejects_non_string_username(client, admin_token, user
 @pytest.mark.parametrize("username", [123, None])
 async def test_update_user_rejects_non_string_username(client, admin_token, username):
     users = await client.get("/api/admin/users", headers=_auth(admin_token))
-    client_id = next(user["id"] for user in users.json() if user["username"] == "client")
+    client_id = next(
+        user["id"] for user in users.json() if user["username"] == "client"
+    )
     response = await client.put(
         f"/api/admin/users/{client_id}",
         headers=_auth(admin_token),
@@ -341,7 +376,9 @@ async def test_update_user_rejects_non_string_username(client, admin_token, user
     }
 
 
-async def test_create_user_rejects_username_shortened_below_minimum(client, admin_token):
+async def test_create_user_rejects_username_shortened_below_minimum(
+    client, admin_token
+):
     response = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
@@ -359,18 +396,30 @@ async def test_create_user_rejects_username_shortened_below_minimum(client, admi
     }
 
 
-async def test_usernames_are_lowercase_and_case_insensitively_unique(client, admin_token):
+async def test_usernames_are_lowercase_and_case_insensitively_unique(
+    client, admin_token
+):
     created = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "Alice", "password": "secret1", "role": "client", "domain_ids": []},
+        json={
+            "username": "Alice",
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert created.status_code == 200
     assert created.json()["username"] == "alice"
     duplicate = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "ALICE", "password": "secret1", "role": "client", "domain_ids": []},
+        json={
+            "username": "ALICE",
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert duplicate.status_code == 409
 
@@ -379,10 +428,17 @@ async def test_delete_user_deactivates_without_removing_row(client, admin_token)
     created = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "retained", "password": "secret1", "role": "client", "domain_ids": []},
+        json={
+            "username": "retained",
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     user_id = created.json()["id"]
-    deleted = await client.delete(f"/api/admin/users/{user_id}", headers=_auth(admin_token))
+    deleted = await client.delete(
+        f"/api/admin/users/{user_id}", headers=_auth(admin_token)
+    )
     assert deleted.status_code == 200
     users = await client.get("/api/admin/users", headers=_auth(admin_token))
     retained = next(user for user in users.json() if user["id"] == user_id)
@@ -438,19 +494,27 @@ async def test_user_domain_grants_record_actor_and_preserve_existing_grants(
         original_admin_id = connection.scalar(
             text("SELECT id FROM users WHERE username = 'admin'")
         )
-        grants = connection.execute(
-            text(
-                """
+        grants = (
+            connection.execute(
+                text(
+                    """
                 SELECT domain_id, granted_by
                 FROM user_domains
                 WHERE user_id = :user_id
                 """
-            ),
-            {"user_id": target.json()["id"]},
-        ).mappings().all()
-    granted_by_domain = {str(grant["domain_id"]): str(grant["granted_by"]) for grant in grants}
+                ),
+                {"user_id": target.json()["id"]},
+            )
+            .mappings()
+            .all()
+        )
+    granted_by_domain = {
+        str(grant["domain_id"]): str(grant["granted_by"]) for grant in grants
+    }
     assert granted_by_domain[default_domain["id"]] == str(original_admin_id)
-    assert granted_by_domain[additional_domain.json()["id"]] == second_admin.json()["id"]
+    assert (
+        granted_by_domain[additional_domain.json()["id"]] == second_admin.json()["id"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +571,10 @@ async def test_short_link_create_mixed_name_and_domain_errors_return_422(
         ShortLinkCreate.model_validate({"domain_id": "not-a-uuid", "name": "   "})
     errors = raised.value.errors()
     assert {error["loc"] for error in errors} == {("domain_id",), ("name",)}
-    assert next(error for error in errors if error["loc"] == ("name",))["type"] == "unprocessable_entity"
+    assert (
+        next(error for error in errors if error["loc"] == ("name",))["type"]
+        == "unprocessable_entity"
+    )
 
 
 async def test_short_link_422_contract_does_not_change_username_validation(
@@ -524,7 +591,12 @@ async def test_short_link_422_contract_does_not_change_username_validation(
     username_response = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": 123, "password": "secret1", "role": "client", "domain_ids": []},
+        json={
+            "username": 123,
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert username_response.status_code == 400
     assert username_response.json()["code"] == "VALIDATION_ERROR"
@@ -585,23 +657,33 @@ async def test_custom_alias_conflict(client, admin_token, default_domain):
     assert resp.json()["code"] == "INVALID_SHORT_CODE"
 
 
-async def test_short_link_list_by_role(client, admin_token, operator_token, client_token, default_domain):
+async def test_short_link_list_by_role(
+    client, admin_token, operator_token, client_token, default_domain
+):
     admin_link = await _create_short_link(client, admin_token, default_domain["id"])
-    operator_link = await _create_short_link(client, operator_token, default_domain["id"])
+    operator_link = await _create_short_link(
+        client, operator_token, default_domain["id"]
+    )
 
-    resp = await client.get("/api/short-links", headers={**_auth(admin_token), **_host()})
+    resp = await client.get(
+        "/api/short-links", headers={**_auth(admin_token), **_host()}
+    )
     assert resp.status_code == 200
     admin_ids = {l["id"] for l in resp.json()}
     assert admin_link["id"] in admin_ids
     assert operator_link["id"] in admin_ids
 
-    resp = await client.get("/api/short-links", headers={**_auth(operator_token), **_host()})
+    resp = await client.get(
+        "/api/short-links", headers={**_auth(operator_token), **_host()}
+    )
     assert resp.status_code == 200
     operator_ids = {l["id"] for l in resp.json()}
     assert operator_link["id"] in operator_ids
     assert admin_link["id"] not in operator_ids
 
-    resp = await client.get("/api/short-links", headers={**_auth(client_token), **_host()})
+    resp = await client.get(
+        "/api/short-links", headers={**_auth(client_token), **_host()}
+    )
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -631,15 +713,19 @@ async def test_get_update_delete_short_link(client, admin_token, default_domain)
     assert resp.status_code == 200
 
     with _sync_engine.connect() as connection:
-        deleted = connection.execute(
-            text(
-                """
+        deleted = (
+            connection.execute(
+                text(
+                    """
                 SELECT is_active, deleted_at IS NOT NULL AS has_deleted_at, deleted_by
                 FROM short_links WHERE id = :id
                 """
-            ),
-            {"id": link["id"]},
-        ).mappings().one()
+                ),
+                {"id": link["id"]},
+            )
+            .mappings()
+            .one()
+        )
     assert deleted["is_active"] is False
     assert deleted["has_deleted_at"] is True
 
@@ -657,7 +743,9 @@ async def test_get_update_delete_short_link(client, admin_token, default_domain)
 
 async def test_target_url_crud(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
-    url = await _add_target_url(client, admin_token, link["id"], "https://target.example.com")
+    url = await _add_target_url(
+        client, admin_token, link["id"], "https://target.example.com"
+    )
     assert url["url"] == "https://target.example.com"
     assert url["name"] is None
     assert url["updated_at"]
@@ -713,11 +801,26 @@ async def test_access_rule_crud(client, admin_token, default_domain):
     resp = await client.post(
         f"/api/short-links/{link['id']}/rules",
         headers={**_auth(admin_token), **_host()},
-        json={"action": "deny", "priority": 1, "countries": ["CN"]},
+        json={
+            "name": "deny China",
+            "action": "deny",
+            "priority": 1,
+            "countries": ["cn"],
+            "ua_platforms": ["MOBILE"],
+            "referer_patterns": [" https://example.com/*, *social* ", ""],
+            "client_requirement": "human",
+            "proxy_requirement": "non_proxy",
+        },
     )
     assert resp.status_code == 200
     rule = resp.json()
     assert rule["action"] == "deny"
+    assert rule["name"] == "deny China"
+    assert rule["countries"] == ["CN"]
+    assert rule["ua_platforms"] == ["mobile"]
+    assert rule["referer_patterns"] == ["https://example.com/*", "*social*"]
+    assert rule["client_requirement"] == "human"
+    assert rule["proxy_requirement"] == "non_proxy"
 
     resp = await client.put(
         f"/api/short-links/{link['id']}/rules/{rule['id']}",
@@ -734,6 +837,59 @@ async def test_access_rule_crud(client, admin_token, default_domain):
     assert resp.status_code == 200
 
 
+async def test_access_rule_requires_name_and_assigns_next_priority(
+    client, admin_token, default_domain
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    missing_name = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"action": "allow"},
+    )
+    assert missing_name.status_code == 400
+
+    first = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "first", "action": "allow"},
+    )
+    second = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "second", "action": "deny"},
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["priority"] == 0
+    assert second.json()["priority"] == 1
+
+
+async def test_access_rule_duplicate_priority_rolls_back_as_conflict(
+    client, admin_token, default_domain
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    first = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "first", "action": "allow", "priority": 3},
+    )
+    duplicate = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "duplicate", "action": "deny", "priority": 3},
+    )
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"code": "CONFLICT", "message": "该优先级已存在"}
+
+    follow_up = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "next", "action": "allow"},
+    )
+    assert follow_up.status_code == 200
+    assert follow_up.json()["priority"] == 4
+
+
 # ---------------------------------------------------------------------------
 # Redirect & logs
 # ---------------------------------------------------------------------------
@@ -741,7 +897,9 @@ async def test_access_rule_crud(client, admin_token, default_domain):
 
 async def test_redirect_to_target(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
-    await _add_target_url(client, admin_token, link["id"], "https://redirect.example.com")
+    await _add_target_url(
+        client, admin_token, link["id"], "https://redirect.example.com"
+    )
     await _add_allow_rule(client, admin_token, link["id"])
 
     resp = await client.get(
@@ -753,7 +911,9 @@ async def test_redirect_to_target(client, admin_token, default_domain):
     assert resp.headers["location"] == "https://redirect.example.com"
 
 
-async def test_head_redirect_preserves_plain_302_contract(client, admin_token, default_domain):
+async def test_head_redirect_preserves_plain_302_contract(
+    client, admin_token, default_domain
+):
     link = await _create_short_link(client, admin_token, default_domain["id"])
     await _add_target_url(client, admin_token, link["id"], "https://head.example.com")
     await _add_allow_rule(client, admin_token, link["id"])
@@ -780,12 +940,20 @@ async def test_redirect_denied_by_rule(client, admin_token, default_domain):
     await client.post(
         f"/api/short-links/{link['id']}/rules",
         headers={**_auth(admin_token), **_host()},
-        json={"action": "deny", "priority": 1, "ua_platforms": ["mobile"]},
+        json={
+            "name": "deny mobile",
+            "action": "deny",
+            "priority": 1,
+            "ua_platforms": ["mobile"],
+        },
     )
 
     resp = await client.get(
         f"/{link['short_code']}",
-        headers={**_host(), "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"},
+        headers={
+            **_host(),
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        },
         follow_redirects=False,
     )
     assert resp.status_code == 403
@@ -830,7 +998,9 @@ async def test_logs_and_daily_stats(client, admin_token, default_domain):
 # ---------------------------------------------------------------------------
 
 
-async def test_client_can_view_granted_link(client, admin_token, client_token, default_domain):
+async def test_client_can_view_granted_link(
+    client, admin_token, client_token, default_domain
+):
     link = await _create_short_link(client, admin_token, default_domain["id"])
 
     resp = await client.get(
@@ -848,9 +1018,10 @@ async def test_client_can_view_granted_link(client, admin_token, client_token, d
         json={"user_id": client_id},
     )
     assert resp.status_code == 200
-    assert resp.json()["granted_by"] == (
-        await client.get("/api/auth/me", headers=_auth(admin_token))
-    ).json()["id"]
+    assert (
+        resp.json()["granted_by"]
+        == (await client.get("/api/auth/me", headers=_auth(admin_token))).json()["id"]
+    )
 
     resp = await client.get(
         f"/api/short-links/{link['id']}",
@@ -881,7 +1052,10 @@ async def test_create_short_link_domain_not_found(client, admin_token):
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host()},
-        json={"domain_id": "00000000-0000-0000-0000-000000000000", "name": "missing domain"},
+        json={
+            "domain_id": "00000000-0000-0000-0000-000000000000",
+            "name": "missing domain",
+        },
     )
     assert resp.status_code == 404
 
@@ -957,7 +1131,9 @@ async def test_access_rule_not_found(client, admin_token, default_domain):
     assert resp.status_code == 404
 
 
-async def test_permission_grant_requires_client_user(client, admin_token, default_domain):
+async def test_permission_grant_requires_client_user(
+    client, admin_token, default_domain
+):
     link = await _create_short_link(client, admin_token, default_domain["id"])
 
     resp = await client.post(
@@ -975,7 +1151,12 @@ async def test_permission_grant_requires_domain_access(
     resp = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "nodomain", "password": "password", "role": "client", "domain_ids": []},
+        json={
+            "username": "nodomain",
+            "password": "password",
+            "role": "client",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 200
     isolated_client = resp.json()
@@ -1002,7 +1183,9 @@ async def test_revoke_permission_not_found(client, admin_token, default_domain):
 
 async def test_redirect_inactive_short_link(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
-    await _add_target_url(client, admin_token, link["id"], "https://inactive.example.com")
+    await _add_target_url(
+        client, admin_token, link["id"], "https://inactive.example.com"
+    )
 
     resp = await client.put(
         f"/api/short-links/{link['id']}",
@@ -1035,7 +1218,12 @@ async def test_login_disabled_user(client, admin_token):
     resp = await client.post(
         "/api/admin/users",
         headers=_auth(admin_token),
-        json={"username": "disabled", "password": "password", "role": "operator", "domain_ids": []},
+        json={
+            "username": "disabled",
+            "password": "password",
+            "role": "operator",
+            "domain_ids": [],
+        },
     )
     assert resp.status_code == 200
     user = resp.json()
@@ -1061,7 +1249,9 @@ async def test_login_disabled_user(client, admin_token):
 
 async def test_redirect_blacklisted_ip(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
-    await _add_target_url(client, admin_token, link["id"], "https://blocked.example.com")
+    await _add_target_url(
+        client, admin_token, link["id"], "https://blocked.example.com"
+    )
 
     await client.post(
         "/api/ip-blacklist",

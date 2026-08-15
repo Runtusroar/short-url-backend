@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
 import fnmatch
 import random
-from uuid import UUID
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -11,6 +11,21 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.features.redirect.ua import get_platform
 from app.integrations.maxmind.country import get_country
 from app.models import AccessLog, AccessRule, Domain, IpBlacklist, ShortLink, TargetUrl
+from app.models.enums import (
+    AccessAction,
+    ClientRequirement,
+    DecisionReason,
+    ProxyRequirement,
+    RedirectResult,
+)
+
+
+@dataclass(frozen=True)
+class RedirectDecision:
+    result: RedirectResult
+    reason: DecisionReason
+    matched_rule: AccessRule | None
+    target: TargetUrl | None
 
 
 def _match_list(value: str | None, candidates: list | None) -> bool:
@@ -21,12 +36,11 @@ def _match_list(value: str | None, candidates: list | None) -> bool:
     return value.lower() in {c.lower() for c in candidates}
 
 
-def _match_referer(referer: str | None, pattern: str | None) -> bool:
-    if not pattern:
+def _match_referer(referer: str | None, patterns: list[str] | None) -> bool:
+    if not patterns:
         return True
     if referer is None:
         return False
-    patterns = [p.strip() for p in pattern.split(",") if p.strip()]
     return any(fnmatch.fnmatch(referer, p) for p in patterns)
 
 
@@ -39,15 +53,19 @@ def rule_matches(
 ) -> bool:
     if not _match_list(country, rule.countries):
         return False
-    if platform == "bot" and not rule.allow_bot:
+    client_requirement = ClientRequirement(rule.client_requirement)
+    if client_requirement == ClientRequirement.HUMAN and platform == "bot":
         return False
-    if platform != "bot" and not _match_list(platform, rule.ua_platforms):
+    if client_requirement == ClientRequirement.BOT and platform != "bot":
         return False
-    if is_proxy and not rule.allow_proxy:
+    if not _match_list(platform, rule.ua_platforms):
         return False
-    if not _match_referer(referer, rule.referer_pattern):
+    proxy_requirement = ProxyRequirement(rule.proxy_requirement)
+    if proxy_requirement == ProxyRequirement.PROXY and not is_proxy:
         return False
-    return True
+    if proxy_requirement == ProxyRequirement.NON_PROXY and is_proxy:
+        return False
+    return _match_referer(referer, rule.referer_patterns)
 
 
 def evaluate_rules(
@@ -57,13 +75,13 @@ def evaluate_rules(
     platform: str | None,
     referer: str | None,
     is_proxy: bool,
-) -> str:
+) -> tuple[AccessAction, AccessRule | None]:
     active_rules = [r for r in rules if r.is_active]
-    active_rules.sort(key=lambda r: r.priority)
+    active_rules.sort(key=lambda rule: (rule.priority, rule.id))
     for rule in active_rules:
         if rule_matches(rule, country, platform, referer, is_proxy):
-            return rule.action
-    return short_link.default_action
+            return AccessAction(rule.action), rule
+    return AccessAction(short_link.default_action), None
 
 
 def weighted_random_choice(urls: list[TargetUrl]) -> TargetUrl | None:
@@ -82,19 +100,40 @@ async def get_redirect_target(
     referer: str | None,
     is_blacklisted: bool,
     is_proxy: bool,
-) -> tuple[str, UUID | None]:
+) -> RedirectDecision:
     if is_blacklisted:
-        action = "blocked"
+        redirect_result = RedirectResult.BLOCKED
+        reason = DecisionReason.BLACKLIST
+        matched_rule = None
     else:
-        result = await db.execute(select(AccessRule).where(AccessRule.short_link_id == short_link.id))
+        result = await db.execute(
+            select(AccessRule)
+            .where(
+                AccessRule.short_link_id == short_link.id,
+                AccessRule.is_active == True,
+            )
+            .order_by(AccessRule.priority, AccessRule.id)
+        )
         rules = result.scalars().all()
-        action = evaluate_rules(rules, short_link, country, platform, referer, is_proxy)
-        if action == "allow":
-            action = "allowed"
-        elif action == "deny":
-            action = "denied"
+        action, matched_rule = evaluate_rules(
+            rules, short_link, country, platform, referer, is_proxy
+        )
+        redirect_result = (
+            RedirectResult.ALLOWED
+            if action == AccessAction.ALLOW
+            else RedirectResult.DENIED
+        )
+        reason = (
+            DecisionReason.MATCHED_RULE
+            if matched_rule
+            else DecisionReason.DEFAULT_ACTION
+        )
 
-    url_type = "denied" if action in ("denied", "blocked") else "allowed"
+    url_type = (
+        "denied"
+        if redirect_result in (RedirectResult.DENIED, RedirectResult.BLOCKED)
+        else "allowed"
+    )
     result = await db.execute(
         select(TargetUrl).where(
             TargetUrl.short_link_id == short_link.id,
@@ -105,7 +144,9 @@ async def get_redirect_target(
     )
     urls = result.scalars().all()
     target = weighted_random_choice(urls)
-    return action, target
+    if target is None:
+        reason = DecisionReason.NO_TARGET
+    return RedirectDecision(redirect_result, reason, matched_rule, target)
 
 
 async def is_blacklisted(db: AsyncSession, ip: str) -> bool:
@@ -125,7 +166,7 @@ async def _log_access(
     platform: str | None,
     referer: str | None,
 ):
-    accessed_at = datetime.now(timezone.utc)
+    accessed_at = datetime.now(UTC)
     plus8_date = accessed_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
     dedup_bucket = int(accessed_at.timestamp() // 30) * 30
     log = AccessLog(
@@ -190,8 +231,8 @@ async def select_and_log_redirect(
     referer: str | None,
     blacklisted: bool,
     is_proxy: bool,
-) -> tuple[str, TargetUrl | None]:
-    action, target = await get_redirect_target(
+) -> RedirectDecision:
+    decision = await get_redirect_target(
         db,
         link,
         country,
@@ -205,15 +246,15 @@ async def select_and_log_redirect(
         db,
         link,
         domain,
-        target,
-        action,
+        decision.target,
+        decision.result,
         ip,
         country,
         ua_string,
         platform,
         referer,
     )
-    return action, target
+    return decision
 
 
 async def execute_redirect(
@@ -230,7 +271,7 @@ async def execute_redirect(
     platform = get_platform(ua_string)
     is_proxy = platform == "bot"
 
-    action, target = await select_and_log_redirect(
+    decision = await select_and_log_redirect(
         db,
         link,
         domain,
@@ -243,9 +284,9 @@ async def execute_redirect(
         is_proxy,
     )
 
-    if not target:
-        if action in ("denied", "blocked"):
+    if not decision.target:
+        if decision.result in (RedirectResult.DENIED, RedirectResult.BLOCKED):
             raise PermissionDeniedError("访问被拒绝")
         raise NotFoundError("目标URL")
 
-    return target.url
+    return decision.target.url

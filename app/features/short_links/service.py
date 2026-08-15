@@ -1,11 +1,17 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import distinct, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import APIError, ConflictError, NotFoundError, PermissionDeniedError
+from app.core.exceptions import (
+    APIError,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from app.features.short_links.schemas import (
     AccessRuleCreate,
     AccessRuleUpdate,
@@ -295,7 +301,7 @@ async def delete_short_link(
 ) -> None:
     link = await _get_managed_link(db, link_id, current_user, current_domain)
     link.is_active = False
-    link.deleted_at = datetime.now(timezone.utc)
+    link.deleted_at = datetime.now(UTC)
     link.deleted_by = current_user.id
     await db.commit()
 
@@ -367,9 +373,21 @@ async def add_access_rule(
     payload: AccessRuleCreate,
 ) -> AccessRule:
     link = await _get_managed_link(db, link_id, current_user, current_domain)
-    rule = AccessRule(short_link_id=link.id, **payload.model_dump())
+    values = payload.model_dump()
+    priority = values.pop("priority")
+    if priority is None:
+        priority = await db.scalar(
+            select(func.coalesce(func.max(AccessRule.priority), -1) + 1).where(
+                AccessRule.short_link_id == link.id
+            )
+        )
+    rule = AccessRule(short_link_id=link.id, priority=priority, **values)
     db.add(rule)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError("该优先级已存在") from exc
     await db.refresh(rule)
     return rule
 
@@ -393,7 +411,11 @@ async def update_access_rule(
         raise NotFoundError("访问规则")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError("该优先级已存在") from exc
     await db.refresh(rule)
     return rule
 
