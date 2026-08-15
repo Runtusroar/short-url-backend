@@ -94,6 +94,8 @@ class AccessRuleUpdate(BaseModel):
     countries: list[str] | None = None
     ua_platforms: list[str] | None = None
     referer_pattern: str | None = None
+    allow_proxy: bool | None = None
+    allow_bot: bool | None = None
     is_active: bool | None = None
 
 
