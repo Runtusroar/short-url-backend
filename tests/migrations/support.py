@@ -54,6 +54,7 @@ def get_foreign_keys(
         foreign_keys = inspect(engine).get_foreign_keys(table_name)
         return {
             foreign_key["constrained_columns"][0]: {
+                "name": foreign_key["name"],
                 "referred_table": foreign_key["referred_table"],
                 "constrained_columns": tuple(foreign_key["constrained_columns"]),
                 "ondelete": (

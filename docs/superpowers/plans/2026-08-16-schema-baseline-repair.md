@@ -2,20 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Repair the five indexes accidentally removed by historical migration `32736aed11b0`, align SQLAlchemy metadata with the repaired database head, and prove safe empty/existing-database Alembic upgrade paths before field redesign begins.
+**Goal:** Repair the five indexes accidentally removed by historical migration `32736aed11b0`, converge deployed `target_url_id` foreign-key drift to `ON DELETE SET NULL`, align SQLAlchemy metadata with the repaired database head, and prove safe empty/existing-database Alembic upgrade paths before field redesign begins.
 
-**Architecture:** Keep every applied historical migration immutable and append one idempotent repair revision after `a9e56b03bf5f`. Declare the repaired indexes in ORM metadata so autogenerate no longer removes them, exercise migrations in UUID-named disposable PostgreSQL databases, and add a read-only schema preflight around the Makefile migration workflow.
+**Architecture:** Keep every applied historical migration immutable. The linear repair chain appends idempotent index repair `c4b7e2a19f03` after `a9e56b03bf5f`, then appends foreign-key convergence repair `d6e8f0a21b35` after `c4b7e2a19f03`. Declare the repaired indexes and `SET NULL` foreign key in ORM metadata, exercise migrations in UUID-named disposable PostgreSQL databases, and add a read-only schema preflight around the Makefile migration workflow.
 
 **Tech Stack:** Python 3.11, SQLAlchemy 2.0, Alembic 1.13, PostgreSQL 15, psycopg 3, pytest 8, Docker Compose, Make
 
 ## Global Constraints
 
-- Do not edit, rename, squash, or delete any migration at or before `a9e56b03bf5f`.
-- Keep a single linear Alembic head; the repair revision is a direct child of `a9e56b03bf5f`.
+- Do not edit, rename, squash, or delete any migration at or before `c4b7e2a19f03`.
+- Keep a single linear Alembic head `d6e8f0a21b35`; `c4b7e2a19f03` is a direct child of `a9e56b03bf5f`, and `d6e8f0a21b35` is a direct child of `c4b7e2a19f03`.
 - Restore exactly the five historical indexes removed by `32736aed11b0`; do not add final Phase 4 indexes early.
 - The repaired index names and ordered columns are `idx_short_links_domain(domain_id)`, `idx_access_logs_domain(domain_id)`, `idx_access_logs_short_link(short_link_id)`, `idx_access_logs_plus8(short_link_id, accessed_at_plus8)`, and `idx_access_logs_dedup(short_link_id, ip, dedup_bucket)`.
-- Existing tables, columns, foreign keys, defaults, CHECK constraints, unique constraints, and application behavior remain unchanged.
-- `access_logs.target_url_id -> target_urls.id ON DELETE SET NULL` is already correct and is verified, not recreated.
+- Existing tables, columns, defaults, CHECK constraints, unique constraints, unrelated foreign keys, and application behavior remain unchanged.
+- `access_logs.target_url_id -> target_urls.id ON DELETE SET NULL` is the canonical contract. Revision `d6e8f0a21b35` converges correctly configured, differently named, and drifted deployed constraints to the canonical named foreign key without raw SQL.
+- The `d6e8f0a21b35` downgrade is intentionally a no-op because `c4b7e2a19f03` already requires the canonical `SET NULL` contract and unknown deployed drift must not be invented or restored.
 - `access_logs.short_link_id/domain_id` delete semantics, `description -> name`, soft deletion, INET fields, rule semantics, audit fields, and final composite indexes remain Phase 4 work.
 - Migration tests may create and drop only databases whose names are generated in-process with prefix `shorturl_migration_` followed by exactly 32 lowercase hex characters.
 - Test cleanup validates the generated database name before every `DROP DATABASE ... WITH (FORCE)` and never drops the shared `shorturl_test`, development, or production database.
@@ -29,6 +30,7 @@
 ### Created
 
 - `alembic/versions/c4b7e2a19f03_restore_baseline_indexes.py`
+- `alembic/versions/d6e8f0a21b35_repair_target_url_fk_drift.py`
 - `tests/migrations/__init__.py`
 - `tests/migrations/conftest.py`
 - `tests/migrations/support.py`
@@ -56,7 +58,7 @@
 - Create: `tests/migrations/test_schema_baseline.py`
 
 **Interfaces:**
-- Produces one Alembic head: `c4b7e2a19f03` with `down_revision = "a9e56b03bf5f"`.
+- Produces index repair revision `c4b7e2a19f03` with `down_revision = "a9e56b03bf5f"`; Task 4 later extends it to the final head `d6e8f0a21b35`.
 - Produces the exact five indexes listed in Global Constraints.
 - Preserves `AccessLog.target_url_id` foreign key `ondelete="SET NULL"`.
 
@@ -101,7 +103,7 @@ def test_target_url_foreign_key_remains_set_null():
     assert foreign_keys[0].ondelete == "SET NULL"
 
 
-def test_repair_revision_extends_current_head():
+def test_index_repair_revision_extends_a9_repair():
     revision = import_module(
         "alembic.versions.c4b7e2a19f03_restore_baseline_indexes"
     )
@@ -220,7 +222,7 @@ uv run pytest -q
 git diff --check
 ```
 
-Expected: metadata tests pass, `c4b7e2a19f03` is the sole head, history remains linear, and the application suite passes.
+Expected: metadata tests pass, history remains linear, and the application suite passes. After Task 4, the sole head is `d6e8f0a21b35`.
 
 - [ ] **Step 6: Commit**
 
@@ -493,15 +495,58 @@ git commit -m "build: validate schema migration state"
 
 ---
 
+### Task 4: Post-Review Drift Repair
+
+**Files:**
+- Create: `alembic/versions/d6e8f0a21b35_repair_target_url_fk_drift.py`
+- Modify: `tests/migrations/support.py`
+- Modify: `tests/migrations/test_alembic_paths.py`
+- Modify: `tests/migrations/test_schema_baseline.py`
+- Modify: `docs/superpowers/plans/2026-08-16-schema-baseline-repair.md`
+
+**Interfaces:**
+- Produces the sole Alembic head `d6e8f0a21b35` with `down_revision = "c4b7e2a19f03"`.
+- Repairs databases whose Alembic version was stamped past `a9e56b03bf5f` while `access_logs.target_url_id` retained `NO ACTION`.
+- Uses `op.get_bind()` and SQLAlchemy inspection to drop every foreign key whose ordered constrained columns are exactly `target_url_id`, using only inspector-returned names, then creates canonical `fk_access_logs_target_url ON DELETE SET NULL`.
+- Leaves the five baseline indexes intact and makes downgrade a documented no-op.
+
+- [ ] **Step 1: Prove the stamped drift path is red**
+
+Upgrade a disposable database to `b1e5f6851085`, verify the target URL foreign
+key has no delete action, stamp it to `a9e56b03bf5f`, and upgrade to head. Before
+the new revision, assert that the missing `SET NULL` contract fails while the
+revision-chain contract also fails because `d6e8f0a21b35` does not exist.
+
+- [ ] **Step 2: Add the append-only convergence revision**
+
+Inspect `access_logs` foreign keys through SQLAlchemy, match constrained columns
+exactly, safely drop all matching named constraints, and create the canonical
+foreign key. Do not edit any existing revision or use raw SQL.
+
+- [ ] **Step 3: Verify migration paths and the whole application**
+
+Run focused migration tests, the full serial suite, Alembic heads/history,
+`alembic check` on a disposable head database, compileall, and diff checks.
+Confirm the disposable stamped path ends with all five baseline indexes and
+`target_url_id ON DELETE SET NULL`.
+
+- [ ] **Step 4: Commit and record review evidence**
+
+Commit the revision, tests, and plan/progress updates as one isolated
+post-review drift repair and write `task-4-report.md`.
+
+---
+
 ## Phase 3 Completion Gate
 
 Phase 3 is complete only when:
 
-- Alembic has one linear head `c4b7e2a19f03`.
+- Alembic has one linear head `d6e8f0a21b35`.
 - All five accidentally removed indexes exist both in ORM metadata and a database upgraded to head.
-- `access_logs.target_url_id` remains `ON DELETE SET NULL` in ORM and migrated PostgreSQL.
+- `access_logs.target_url_id` is `ON DELETE SET NULL` in ORM, a normally migrated PostgreSQL database, and a database stamped from the historical `NO ACTION` state.
 - An empty disposable database upgrades to head.
 - A disposable database at `a9e56b03bf5f` upgrades to repaired head.
+- A disposable database upgraded to `b1e5f6851085`, stamped to `a9e56b03bf5f`, and upgraded to head converges its target URL foreign key while retaining all five indexes.
 - Repair downgrade/upgrade round-trip passes.
 - `alembic check` reports no pending operations against a migrated disposable database.
 - Preflight accepts empty/repairable states, rejects conflicting same-named indexes, and postflight requires the repaired schema.

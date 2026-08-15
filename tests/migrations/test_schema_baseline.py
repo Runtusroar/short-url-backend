@@ -3,7 +3,6 @@ from pathlib import Path
 
 from app.models import AccessLog, ShortLink
 
-
 EXPECTED = {
     "short_links": {
         "idx_short_links_domain": ("domain_id",),
@@ -35,7 +34,7 @@ def test_target_url_foreign_key_remains_set_null():
     assert foreign_keys[0].ondelete == "SET NULL"
 
 
-def test_repair_revision_extends_current_head():
+def test_index_repair_revision_extends_a9_repair():
     revision_path = (
         Path(__file__).parents[2]
         / "alembic/versions/c4b7e2a19f03_restore_baseline_indexes.py"
@@ -48,3 +47,18 @@ def test_repair_revision_extends_current_head():
 
     assert revision.revision == "c4b7e2a19f03"
     assert revision.down_revision == "a9e56b03bf5f"
+
+
+def test_target_url_drift_repair_revision_extends_index_repair():
+    revision_path = (
+        Path(__file__).parents[2]
+        / "alembic/versions/d6e8f0a21b35_repair_target_url_fk_drift.py"
+    )
+    spec = spec_from_file_location("repair_target_url_fk_drift", revision_path)
+    assert spec is not None
+    assert spec.loader is not None
+    revision = module_from_spec(spec)
+    spec.loader.exec_module(revision)
+
+    assert revision.revision == "d6e8f0a21b35"
+    assert revision.down_revision == "c4b7e2a19f03"
