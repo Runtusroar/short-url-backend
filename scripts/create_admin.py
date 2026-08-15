@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
+from app.features.users.schemas import normalize_username
 from app.core.security import get_password_hash
 from app.models import User
 
@@ -15,7 +16,12 @@ async def main():
     if len(sys.argv) != 3:
         print("Usage: python scripts/create_admin.py <username> <password>")
         sys.exit(1)
-    username, password = sys.argv[1], sys.argv[2]
+    try:
+        username = normalize_username(sys.argv[1])
+    except ValueError as exc:
+        print(str(exc))
+        sys.exit(1)
+    password = sys.argv[2]
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.username == username))
         user = result.scalar_one_or_none()

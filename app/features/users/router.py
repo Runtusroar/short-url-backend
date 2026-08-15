@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import require_admin
-from app.features.users.schemas import UserCreate, UserResponse
+from app.features.users.schemas import UserCreate, UserResponse, UserUpdate
 from app.features.users.service import (
     create_user as create_user_workflow,
     delete_user as delete_user_workflow,
@@ -31,17 +31,17 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    return await create_user_workflow(db, payload)
+    return await create_user_workflow(db, payload, current_user)
 
 
 @router.put("/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: UUID,
-    payload: UserCreate,
+    payload: UserUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    return await update_user_workflow(db, user_id, payload)
+    return await update_user_workflow(db, user_id, payload, current_user)
 
 
 @router.delete("/{user_id}")

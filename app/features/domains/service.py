@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
@@ -31,7 +32,11 @@ async def create_domain(db: AsyncSession, payload: DomainCreate) -> Domain:
 
     domain = Domain(**payload.model_dump())
     db.add(domain)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError("域名已存在") from exc
     await db.refresh(domain)
     return domain
 
@@ -62,12 +67,17 @@ async def update_domain(
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(domain, field, value)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise ConflictError("域名已存在") from exc
     await db.refresh(domain)
     return domain
 
 
 async def delete_domain(db: AsyncSession, domain_id: UUID) -> None:
     domain = await get_domain(db, domain_id)
-    await db.delete(domain)
+    domain.is_active = False
+    domain.is_default = False
     await db.commit()

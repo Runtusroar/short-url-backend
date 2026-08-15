@@ -1,5 +1,6 @@
 """End-to-end API integration tests."""
 
+import pytest
 from sqlalchemy import text
 from httpx import AsyncClient
 
@@ -148,7 +149,7 @@ async def test_duplicate_domain_conflict(client, admin_token):
     assert "已存在" in resp.json()["message"]
 
 
-async def test_get_update_delete_domain(client, admin_token):
+async def test_domain_deactivates_without_removing_row(client, admin_token):
     resp = await client.post(
         "/api/domains",
         headers=_auth(admin_token),
@@ -172,7 +173,47 @@ async def test_get_update_delete_domain(client, admin_token):
     assert resp.status_code == 200
 
     resp = await client.get(f"/api/domains/{domain['id']}", headers=_auth(admin_token))
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+    assert resp.json()["is_default"] is False
+
+
+async def test_domain_normalizes_host_and_validates_timezone(client, admin_token):
+    response = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": "Go.Example.COM", "timezone": "Asia/Shanghai"},
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "go.example.com"
+    assert response.json()["timezone"] == "Asia/Shanghai"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "https://go.example.com",
+        "go.example.com/path",
+        "go.example.com:443",
+        "   ",
+    ],
+)
+async def test_domain_rejects_non_hosts(client, admin_token, name):
+    response = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": name},
+    )
+    assert response.status_code == 400
+
+
+async def test_domain_rejects_invalid_iana_timezone(client, admin_token):
+    response = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": "timezone.example.com", "timezone": "Mars/Olympus"},
+    )
+    assert response.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +247,8 @@ async def test_admin_user_crud(client, admin_token):
     assert resp.status_code == 200
 
     resp = await client.get("/api/admin/users", headers=_auth(admin_token))
-    assert not any(u["username"] == "newop2" for u in resp.json())
+    retained = next(u for u in resp.json() if u["username"] == "newop2")
+    assert retained["is_active"] is False
 
 
 async def test_duplicate_username_conflict(client, admin_token):
@@ -223,6 +265,100 @@ async def test_duplicate_username_conflict(client, admin_token):
         json={"username": "dupuser", "password": "password", "role": "client", "domain_ids": []},
     )
     assert resp.status_code == 409
+
+
+async def test_usernames_are_lowercase_and_case_insensitively_unique(client, admin_token):
+    created = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": "Alice", "password": "secret1", "role": "client", "domain_ids": []},
+    )
+    assert created.status_code == 200
+    assert created.json()["username"] == "alice"
+    duplicate = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": "ALICE", "password": "secret1", "role": "client", "domain_ids": []},
+    )
+    assert duplicate.status_code == 409
+
+
+async def test_delete_user_deactivates_without_removing_row(client, admin_token):
+    created = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": "retained", "password": "secret1", "role": "client", "domain_ids": []},
+    )
+    user_id = created.json()["id"]
+    deleted = await client.delete(f"/api/admin/users/{user_id}", headers=_auth(admin_token))
+    assert deleted.status_code == 200
+    users = await client.get("/api/admin/users", headers=_auth(admin_token))
+    retained = next(user for user in users.json() if user["id"] == user_id)
+    assert retained["is_active"] is False
+
+
+async def test_user_domain_grants_record_actor_and_preserve_existing_grants(
+    client, admin_token, default_domain
+):
+    target = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={
+            "username": "grant-target",
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [default_domain["id"]],
+        },
+    )
+    assert target.status_code == 200
+    second_admin = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={
+            "username": "grant-admin",
+            "password": "secret1",
+            "role": "admin",
+            "domain_ids": [],
+        },
+    )
+    assert second_admin.status_code == 200
+    additional_domain = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": "additional-grant.example.com"},
+    )
+    assert additional_domain.status_code == 200
+    login = await client.post(
+        "/api/auth/login",
+        data={"username": "GRANT-ADMIN", "password": "secret1"},
+    )
+    assert login.status_code == 200
+    second_admin_token = login.json()["access_token"]
+
+    updated = await client.put(
+        f"/api/admin/users/{target.json()['id']}",
+        headers=_auth(second_admin_token),
+        json={"domain_ids": [default_domain["id"], additional_domain.json()["id"]]},
+    )
+    assert updated.status_code == 200
+
+    with _sync_engine.connect() as connection:
+        original_admin_id = connection.scalar(
+            text("SELECT id FROM users WHERE username = 'admin'")
+        )
+        grants = connection.execute(
+            text(
+                """
+                SELECT domain_id, granted_by
+                FROM user_domains
+                WHERE user_id = :user_id
+                """
+            ),
+            {"user_id": target.json()["id"]},
+        ).mappings().all()
+    granted_by_domain = {str(grant["domain_id"]): str(grant["granted_by"]) for grant in grants}
+    assert granted_by_domain[default_domain["id"]] == str(original_admin_id)
+    assert granted_by_domain[additional_domain.json()["id"]] == second_admin.json()["id"]
 
 
 # ---------------------------------------------------------------------------

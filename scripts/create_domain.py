@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
+from app.features.domains.schemas import normalize_domain_name
 from app.models import Domain
 
 
@@ -14,7 +15,11 @@ async def main():
     if len(sys.argv) < 2:
         print("Usage: python scripts/create_domain.py <domain-name> [--default]")
         sys.exit(1)
-    name = sys.argv[1].lower()
+    try:
+        name = normalize_domain_name(sys.argv[1])
+    except ValueError as exc:
+        print(str(exc))
+        sys.exit(1)
     is_default = "--default" in sys.argv
 
     async with AsyncSessionLocal() as db:

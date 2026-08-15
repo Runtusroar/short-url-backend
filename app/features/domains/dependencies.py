@@ -17,11 +17,15 @@ async def get_current_domain(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> Domain:
     host = get_request_host(request)
-    result = await db.execute(select(Domain).where(Domain.name == host))
+    result = await db.execute(
+        select(Domain).where(Domain.name == host, Domain.is_active.is_(True))
+    )
     domain = result.scalar_one_or_none()
     if domain:
         return domain
-    result = await db.execute(select(Domain).where(Domain.is_default == True))
+    result = await db.execute(
+        select(Domain).where(Domain.is_default.is_(True), Domain.is_active.is_(True))
+    )
     domain = result.scalar_one_or_none()
     if domain:
         return domain

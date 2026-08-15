@@ -3,11 +3,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
 from app.core.security import create_access_token, verify_password
+from app.features.users.schemas import normalize_username
 from app.models import User
 
 
 async def authenticate_user(db: AsyncSession, username: str, password: str) -> User:
-    result = await db.execute(select(User).where(User.username == username))
+    try:
+        normalized_username = normalize_username(username)
+    except ValueError as exc:
+        raise UnauthorizedError("用户名或密码错误") from exc
+    result = await db.execute(select(User).where(User.username == normalized_username))
     user = result.scalar_one_or_none()
     if not user or not verify_password(password, user.password_hash):
         raise UnauthorizedError("用户名或密码错误")
