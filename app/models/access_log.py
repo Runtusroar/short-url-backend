@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import BigInteger, Column, Date, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Column, Date, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -25,3 +25,10 @@ class AccessLog(Base):
     accessed_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
     accessed_at_plus8 = Column(Date(), nullable=False)
     dedup_bucket = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        Index("idx_access_logs_domain", "domain_id"),
+        Index("idx_access_logs_short_link", "short_link_id"),
+        Index("idx_access_logs_plus8", "short_link_id", "accessed_at_plus8"),
+        Index("idx_access_logs_dedup", "short_link_id", "ip", "dedup_bucket"),
+    )
