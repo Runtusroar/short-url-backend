@@ -104,9 +104,15 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
-        message = _format_validation_errors(exc.errors())
+        errors = exc.errors()
+        message = _format_validation_errors(errors)
+        status_code = (
+            status.HTTP_422_UNPROCESSABLE_ENTITY
+            if any(error.get("type") == "unprocessable_entity" for error in errors)
+            else status.HTTP_400_BAD_REQUEST
+        )
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status_code,
             content={"code": "VALIDATION_ERROR", "message": message},
         )
 

@@ -1,14 +1,27 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
+
+
+def _contract_error(message: str) -> PydanticCustomError:
+    return PydanticCustomError("unprocessable_entity", message)
 
 
 class TargetUrlBase(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
     url: str
     url_type: str = Field(..., pattern="^(allowed|denied)$")
-    weight: int = Field(default=1, ge=0)
+    weight: int = 1
     is_active: bool = True
+
+    @field_validator("weight")
+    @classmethod
+    def validate_weight(cls, value: int) -> int:
+        if value < 1:
+            raise _contract_error("weight must be at least 1")
+        return value
 
 
 class TargetUrlCreate(TargetUrlBase):
@@ -16,10 +29,18 @@ class TargetUrlCreate(TargetUrlBase):
 
 
 class TargetUrlUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
     url: str | None = None
     url_type: str | None = Field(default=None, pattern="^(allowed|denied)$")
-    weight: int | None = Field(default=None, ge=0)
+    weight: int | None = None
     is_active: bool | None = None
+
+    @field_validator("weight")
+    @classmethod
+    def validate_weight(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise _contract_error("weight must be at least 1")
+        return value
 
 
 class TargetUrlResponse(TargetUrlBase):
@@ -27,6 +48,7 @@ class TargetUrlResponse(TargetUrlBase):
     id: UUID
     short_link_id: UUID
     created_at: datetime
+    updated_at: datetime
 
 
 class AccessRuleBase(BaseModel):
@@ -61,23 +83,37 @@ class AccessRuleResponse(AccessRuleBase):
     short_link_id: UUID
 
 
-class ShortLinkBase(BaseModel):
-    short_code: str | None = Field(default=None, pattern="^[a-zA-Z0-9_-]{3,32}$")
-    description: str | None = None
-    is_active: bool = True
-
-
 class ShortLinkCreate(BaseModel):
     domain_id: UUID
     custom_alias: str | None = Field(default=None, pattern="^[a-zA-Z0-9_-]{3,32}$")
-    description: str | None = None
+    name: str
     normal_urls: list[str] = Field(default_factory=list, min_length=1)
     blocked_urls: list[str] = Field(default_factory=list, min_length=1)
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_name(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise _contract_error("name must be 1 to 128 characters")
+        name = value.get("name")
+        if not isinstance(name, str) or not 1 <= len(name) <= 128:
+            raise _contract_error("name must be 1 to 128 characters")
+        return value
+
 
 class ShortLinkUpdate(BaseModel):
-    description: str | None = None
+    name: str | None = None
     is_active: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_name(cls, value: object) -> object:
+        if not isinstance(value, dict) or "name" not in value:
+            return value
+        name = value["name"]
+        if not isinstance(name, str) or not 1 <= len(name) <= 128:
+            raise _contract_error("name must be 1 to 128 characters")
+        return value
 
 
 class ShortLinkResponse(BaseModel):
@@ -85,7 +121,7 @@ class ShortLinkResponse(BaseModel):
     id: UUID
     short_code: str
     is_custom_alias: bool
-    description: str | None
+    name: str
     owner_id: UUID
     domain_id: UUID
     is_active: bool
@@ -103,6 +139,7 @@ class ShortLinkPermissionResponse(BaseModel):
     id: UUID
     short_link_id: UUID
     user_id: UUID
+    granted_by: UUID | None
     created_at: datetime
 
 

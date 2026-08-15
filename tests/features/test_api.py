@@ -27,7 +27,7 @@ async def _create_short_link(client: AsyncClient, token: str, domain_id: str) ->
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(token), **_host()},
-        json={"domain_id": domain_id, "description": "integration test link"},
+        json={"domain_id": domain_id, "name": "integration test link"},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -461,6 +461,41 @@ async def test_admin_create_short_link(client, admin_token, default_domain):
     assert link["short_code"]
     assert link["domain_id"] == default_domain["id"]
     assert len(link["short_code"]) == 6
+    assert link["name"] == "integration test link"
+    assert link["default_action"] == "deny"
+    assert "description" not in link
+
+
+@pytest.mark.parametrize("name", ["", "x" * 129])
+async def test_short_link_create_rejects_blank_or_overlong_name(
+    client, admin_token, default_domain, name
+):
+    response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={"domain_id": default_domain["id"], "name": name},
+    )
+    assert response.status_code == 422
+
+
+async def test_short_link_422_contract_does_not_change_username_validation(
+    client, admin_token, default_domain
+):
+    short_link_response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={"domain_id": default_domain["id"], "name": ""},
+    )
+    assert short_link_response.status_code == 422
+    assert short_link_response.json()["code"] == "VALIDATION_ERROR"
+
+    username_response = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": 123, "password": "secret1", "role": "client", "domain_ids": []},
+    )
+    assert username_response.status_code == 400
+    assert username_response.json()["code"] == "VALIDATION_ERROR"
 
 
 async def test_operator_create_short_link(client, operator_token, default_domain):
@@ -482,7 +517,11 @@ async def test_custom_alias(client, admin_token, default_domain):
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host()},
-        json={"domain_id": default_domain["id"], "custom_alias": "myalias"},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": "myalias",
+            "name": "custom alias",
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["short_code"] == "myalias"
@@ -493,14 +532,22 @@ async def test_custom_alias_conflict(client, admin_token, default_domain):
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host()},
-        json={"domain_id": default_domain["id"], "custom_alias": "conflict-alias"},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": "conflict-alias",
+            "name": "first custom alias",
+        },
     )
     assert resp.status_code == 200
 
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host()},
-        json={"domain_id": default_domain["id"], "custom_alias": "conflict-alias"},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": "conflict-alias",
+            "name": "second custom alias",
+        },
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "INVALID_SHORT_CODE"
@@ -540,16 +587,29 @@ async def test_get_update_delete_short_link(client, admin_token, default_domain)
     resp = await client.put(
         f"/api/short-links/{link['id']}",
         headers={**_auth(admin_token), **_host()},
-        json={"description": "updated"},
+        json={"name": "updated"},
     )
     assert resp.status_code == 200
-    assert resp.json()["description"] == "updated"
+    assert resp.json()["name"] == "updated"
 
     resp = await client.delete(
         f"/api/short-links/{link['id']}",
         headers={**_auth(admin_token), **_host()},
     )
     assert resp.status_code == 200
+
+    with _sync_engine.connect() as connection:
+        deleted = connection.execute(
+            text(
+                """
+                SELECT is_active, deleted_at IS NOT NULL AS has_deleted_at, deleted_by
+                FROM short_links WHERE id = :id
+                """
+            ),
+            {"id": link["id"]},
+        ).mappings().one()
+    assert deleted["is_active"] is False
+    assert deleted["has_deleted_at"] is True
 
     resp = await client.get(
         f"/api/short-links/{link['id']}",
@@ -567,6 +627,8 @@ async def test_target_url_crud(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
     url = await _add_target_url(client, admin_token, link["id"], "https://target.example.com")
     assert url["url"] == "https://target.example.com"
+    assert url["name"] is None
+    assert url["updated_at"]
 
     resp = await client.put(
         f"/api/short-links/{link['id']}/urls/{url['id']}",
@@ -581,6 +643,32 @@ async def test_target_url_crud(client, admin_token, default_domain):
         headers={**_auth(admin_token), **_host()},
     )
     assert resp.status_code == 200
+
+
+async def test_target_url_rejects_zero_weight_and_preserves_optional_name(
+    client, admin_token, default_domain
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    invalid = await client.post(
+        f"/api/short-links/{link['id']}/urls",
+        headers={**_auth(admin_token), **_host()},
+        json={"url": "https://zero.example.com", "url_type": "allowed", "weight": 0},
+    )
+    assert invalid.status_code == 422
+
+    created = await client.post(
+        f"/api/short-links/{link['id']}/urls",
+        headers={**_auth(admin_token), **_host()},
+        json={
+            "url": "https://named.example.com",
+            "url_type": "allowed",
+            "weight": 1,
+            "name": "named target",
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["name"] == "named target"
+    assert created.json()["updated_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +816,9 @@ async def test_client_can_view_granted_link(client, admin_token, client_token, d
         json={"user_id": client_id},
     )
     assert resp.status_code == 200
+    assert resp.json()["granted_by"] == (
+        await client.get("/api/auth/me", headers=_auth(admin_token))
+    ).json()["id"]
 
     resp = await client.get(
         f"/api/short-links/{link['id']}",
@@ -758,7 +849,7 @@ async def test_create_short_link_domain_not_found(client, admin_token):
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host()},
-        json={"domain_id": "00000000-0000-0000-0000-000000000000"},
+        json={"domain_id": "00000000-0000-0000-0000-000000000000", "name": "missing domain"},
     )
     assert resp.status_code == 404
 
@@ -775,7 +866,7 @@ async def test_create_short_link_inactive_domain(client, admin_token):
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(admin_token), **_host("inactive.test")},
-        json={"domain_id": domain["id"]},
+        json={"domain_id": domain["id"], "name": "inactive domain"},
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "DOMAIN_INACTIVE"
@@ -795,7 +886,7 @@ async def test_operator_cannot_create_in_unauthorized_domain(
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(operator_token), **_host("private.test")},
-        json={"domain_id": private_domain["id"]},
+        json={"domain_id": private_domain["id"], "name": "private domain"},
     )
     assert resp.status_code == 403
 

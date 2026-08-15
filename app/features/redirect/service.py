@@ -67,13 +67,10 @@ def evaluate_rules(
 
 
 def weighted_random_choice(urls: list[TargetUrl]) -> TargetUrl | None:
-    active = [u for u in urls if u.is_active]
+    active = [u for u in urls if u.is_active and u.weight > 0]
     if not active:
         return None
     weights = [u.weight for u in active]
-    total = sum(weights)
-    if total <= 0:
-        return random.choice(active)
     return random.choices(active, weights=weights, k=1)[0]
 
 
@@ -102,6 +99,8 @@ async def get_redirect_target(
         select(TargetUrl).where(
             TargetUrl.short_link_id == short_link.id,
             TargetUrl.url_type == url_type,
+            TargetUrl.is_active == True,
+            TargetUrl.weight > 0,
         )
     )
     urls = result.scalars().all()
@@ -171,6 +170,7 @@ async def resolve_domain_and_link(
             ShortLink.domain_id == domain.id,
             ShortLink.short_code == short_code,
             ShortLink.is_active == True,
+            ShortLink.deleted_at.is_(None),
         )
     )
     link = result.scalar_one_or_none()

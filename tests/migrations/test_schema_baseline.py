@@ -6,6 +6,12 @@ from app.models import AccessLog, ShortLink
 EXPECTED = {
     "short_links": {
         "idx_short_links_domain": ("domain_id",),
+        "idx_short_links_domain_created_at": ("domain_id", "created_at"),
+        "idx_short_links_domain_owner_created_at": (
+            "domain_id",
+            "owner_id",
+            "created_at",
+        ),
     },
     "access_logs": {
         "idx_access_logs_domain": ("domain_id",),

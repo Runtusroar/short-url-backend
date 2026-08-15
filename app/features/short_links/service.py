@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -65,7 +65,9 @@ async def _has_domain(user: User, domain_id: UUID, db: AsyncSession) -> bool:
 
 
 async def _get_short_link(db: AsyncSession, link_id: UUID, user: User) -> ShortLink:
-    result = await db.execute(select(ShortLink).where(ShortLink.id == link_id))
+    result = await db.execute(
+        select(ShortLink).where(ShortLink.id == link_id, ShortLink.deleted_at.is_(None))
+    )
     link = result.scalar_one_or_none()
     if not link:
         raise NotFoundError("短链")
@@ -106,7 +108,9 @@ async def list_short_links(
     effective_domain = await _resolve_effective_domain(
         domain_id, current_user, current_domain, db
     )
-    base_query = select(ShortLink).where(ShortLink.domain_id == effective_domain.id)
+    base_query = select(ShortLink).where(
+        ShortLink.domain_id == effective_domain.id, ShortLink.deleted_at.is_(None)
+    )
 
     if current_user.role == "admin":
         query = base_query
@@ -149,7 +153,7 @@ async def create_short_link(
         domain_id=payload.domain_id,
         short_code=short_code,
         is_custom_alias=bool(payload.custom_alias),
-        description=payload.description,
+        name=payload.name,
         default_action="deny",
         owner_id=current_user.id,
     )
@@ -192,7 +196,9 @@ async def daily_stats_for_links(
     if stats_date is None:
         stats_date = datetime.now(ZoneInfo("Asia/Shanghai")).date()
 
-    base_query = select(ShortLink).where(ShortLink.domain_id == current_domain.id)
+    base_query = select(ShortLink).where(
+        ShortLink.domain_id == current_domain.id, ShortLink.deleted_at.is_(None)
+    )
     if current_user.role != "admin":
         base_query = base_query.where(ShortLink.owner_id == current_user.id)
 
@@ -240,7 +246,9 @@ async def get_short_link(
     current_user: User,
     current_domain: Domain,
 ) -> ShortLink:
-    result = await db.execute(select(ShortLink).where(ShortLink.id == link_id))
+    result = await db.execute(
+        select(ShortLink).where(ShortLink.id == link_id, ShortLink.deleted_at.is_(None))
+    )
     link = result.scalar_one_or_none()
     if not link:
         raise NotFoundError("短链")
@@ -270,8 +278,8 @@ async def update_short_link(
     payload: ShortLinkUpdate,
 ) -> ShortLink:
     link = await _get_managed_link(db, link_id, current_user, current_domain)
-    if payload.description is not None:
-        link.description = payload.description
+    if payload.name is not None:
+        link.name = payload.name
     if payload.is_active is not None:
         link.is_active = payload.is_active
     await db.commit()
@@ -286,7 +294,9 @@ async def delete_short_link(
     current_domain: Domain,
 ) -> None:
     link = await _get_managed_link(db, link_id, current_user, current_domain)
-    await db.delete(link)
+    link.is_active = False
+    link.deleted_at = datetime.now(timezone.utc)
+    link.deleted_by = current_user.id
     await db.commit()
 
 
@@ -427,7 +437,9 @@ async def grant_permission(
     if not await _has_domain(user, current_domain.id, db):
         raise PermissionDeniedError("该 client 用户无权访问此域名")
 
-    perm = ShortLinkPermission(short_link_id=link.id, user_id=user.id)
+    perm = ShortLinkPermission(
+        short_link_id=link.id, user_id=user.id, granted_by=current_user.id
+    )
     db.add(perm)
     try:
         await db.commit()

@@ -17,7 +17,7 @@ async def _create_link_and_log(client: AsyncClient, token: str, domain_id: str) 
     resp = await client.post(
         "/api/short-links",
         headers={**_auth(token), **_host()},
-        json={"domain_id": domain_id, "description": "log test"},
+        json={"domain_id": domain_id, "name": "log test"},
     )
     assert resp.status_code == 200
     link = resp.json()
@@ -51,6 +51,31 @@ async def test_operator_can_view_own_link_logs(
     )
     assert resp.status_code == 200
     assert len(resp.json()) == 2
+
+
+async def test_soft_deleted_short_link_keeps_authorized_historical_logs(
+    client: AsyncClient, operator_token: str, default_domain: dict
+):
+    link = await _create_link_and_log(client, operator_token, default_domain["id"])
+
+    deleted = await client.delete(
+        f"/api/short-links/{link['id']}",
+        headers={**_auth(operator_token), **_host()},
+    )
+    assert deleted.status_code == 200
+
+    redirect = await client.get(
+        f"/{link['short_code']}", headers=_host(), follow_redirects=False
+    )
+    assert redirect.status_code == 404
+
+    logs = await client.get(
+        "/api/logs",
+        headers={**_auth(operator_token), **_host()},
+        params={"short_link_id": link["id"]},
+    )
+    assert logs.status_code == 200
+    assert len(logs.json()) == 2
 
 
 async def test_operator_cannot_view_other_link_logs(

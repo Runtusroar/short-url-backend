@@ -108,12 +108,11 @@ def test_evaluate_rules_inactive_ignored():
     assert evaluate_rules([inactive], short_link, None, None, None, False) == "allow"
 
 
-def test_weighted_random_choice_zero_total_weight():
+def test_weighted_random_choice_excludes_non_positive_weights():
     url = MagicMock()
     url.is_active = True
     url.weight = 0
-    result = weighted_random_choice([url])
-    assert result is url
+    assert weighted_random_choice([url]) is None
 
 
 class _ScalarRows:
