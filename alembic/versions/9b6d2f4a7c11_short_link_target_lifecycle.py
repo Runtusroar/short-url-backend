@@ -232,10 +232,68 @@ def downgrade() -> None:
     op.execute("UPDATE short_links SET description = name")
     op.drop_column("short_links", "name")
 
-    for table_name, columns in {
-        "short_links": ("id", "is_custom_alias", "is_active", "default_action", "created_at", "updated_at"),
-        "short_link_permissions": ("id", "created_at"),
-        "target_urls": ("id", "weight", "is_active", "created_at"),
-    }.items():
-        for column_name in columns:
-            op.alter_column(table_name, column_name, existing_nullable=False, server_default=None)
+    # Restore f31a8c0d4e72's actual server-default contract.  UUID primary
+    # keys and default_action existed before this revision; the other Task 2
+    # defaults did not.
+    op.alter_column(
+        "short_links",
+        "id",
+        existing_type=postgresql.UUID(as_uuid=True),
+        existing_nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    )
+    op.alter_column(
+        "short_links",
+        "default_action",
+        existing_type=sa.String(length=16),
+        existing_nullable=False,
+        server_default=sa.text("'allow'"),
+    )
+    for column_name, column_type in (
+        ("is_custom_alias", sa.Boolean()),
+        ("is_active", sa.Boolean()),
+        ("created_at", sa.DateTime(timezone=True)),
+        ("updated_at", sa.DateTime(timezone=True)),
+    ):
+        op.alter_column(
+            "short_links",
+            column_name,
+            existing_type=column_type,
+            existing_nullable=False,
+            server_default=None,
+        )
+
+    op.alter_column(
+        "short_link_permissions",
+        "id",
+        existing_type=postgresql.UUID(as_uuid=True),
+        existing_nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    )
+    op.alter_column(
+        "short_link_permissions",
+        "created_at",
+        existing_type=sa.DateTime(timezone=True),
+        existing_nullable=False,
+        server_default=None,
+    )
+
+    op.alter_column(
+        "target_urls",
+        "id",
+        existing_type=postgresql.UUID(as_uuid=True),
+        existing_nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    )
+    for column_name, column_type in (
+        ("weight", sa.Integer()),
+        ("is_active", sa.Boolean()),
+        ("created_at", sa.DateTime(timezone=True)),
+    ):
+        op.alter_column(
+            "target_urls",
+            column_name,
+            existing_type=column_type,
+            existing_nullable=False,
+            server_default=None,
+        )

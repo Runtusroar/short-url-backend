@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
 
@@ -90,13 +90,10 @@ class ShortLinkCreate(BaseModel):
     normal_urls: list[str] = Field(default_factory=list, min_length=1)
     blocked_urls: list[str] = Field(default_factory=list, min_length=1)
 
-    @model_validator(mode="before")
+    @field_validator("name", mode="before")
     @classmethod
-    def validate_name(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            raise _contract_error("name must be 1 to 128 characters")
-        name = value.get("name")
-        if not isinstance(name, str) or not 1 <= len(name) <= 128:
+    def validate_name(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value) > 128:
             raise _contract_error("name must be 1 to 128 characters")
         return value
 
@@ -105,13 +102,10 @@ class ShortLinkUpdate(BaseModel):
     name: str | None = None
     is_active: bool | None = None
 
-    @model_validator(mode="before")
+    @field_validator("name", mode="before")
     @classmethod
-    def validate_name(cls, value: object) -> object:
-        if not isinstance(value, dict) or "name" not in value:
-            return value
-        name = value["name"]
-        if not isinstance(name, str) or not 1 <= len(name) <= 128:
+    def validate_name(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value) > 128:
             raise _contract_error("name must be 1 to 128 characters")
         return value
 

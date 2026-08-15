@@ -3,10 +3,12 @@
 import uuid
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import text
 from httpx import AsyncClient
 
 from app.core.security import get_password_hash
+from app.features.short_links.schemas import ShortLinkCreate
 from tests.conftest import _sync_engine
 
 
@@ -466,7 +468,7 @@ async def test_admin_create_short_link(client, admin_token, default_domain):
     assert "description" not in link
 
 
-@pytest.mark.parametrize("name", ["", "x" * 129])
+@pytest.mark.parametrize("name", ["", "   ", "x" * 129])
 async def test_short_link_create_rejects_blank_or_overlong_name(
     client, admin_token, default_domain, name
 ):
@@ -476,6 +478,36 @@ async def test_short_link_create_rejects_blank_or_overlong_name(
         json={"domain_id": default_domain["id"], "name": name},
     )
     assert response.status_code == 422
+
+
+async def test_short_link_create_preserves_nonblank_name_whitespace(
+    client, admin_token, default_domain
+):
+    response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={"domain_id": default_domain["id"], "name": "  readable name  "},
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "  readable name  "
+
+
+async def test_short_link_create_mixed_name_and_domain_errors_return_422(
+    client, admin_token
+):
+    response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={"domain_id": "not-a-uuid", "name": "   "},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+    with pytest.raises(ValidationError) as raised:
+        ShortLinkCreate.model_validate({"domain_id": "not-a-uuid", "name": "   "})
+    errors = raised.value.errors()
+    assert {error["loc"] for error in errors} == {("domain_id",), ("name",)}
+    assert next(error for error in errors if error["loc"] == ("name",))["type"] == "unprocessable_entity"
 
 
 async def test_short_link_422_contract_does_not_change_username_validation(

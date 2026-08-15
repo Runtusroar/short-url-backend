@@ -57,6 +57,74 @@ def _seed_legacy_link(connection, *, description: str | None, default_action: st
     return user_id, domain_id, link_id
 
 
+def test_f31_short_link_defaults_are_the_downgrade_contract(migration_database_url):
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            user_id, domain_id, existing_link_id = _seed_legacy_link(
+                connection, description="f31 fixture"
+            )
+            inserted_link = connection.execute(
+                text(
+                    """
+                    INSERT INTO short_links
+                        (domain_id, short_code, is_custom_alias, description, owner_id,
+                         is_active, created_at, updated_at)
+                    VALUES (:domain_id, 'f31-defaults', false, 'F31 defaults', :owner_id,
+                            true, now(), now())
+                    RETURNING id, default_action
+                    """
+                ),
+                {"domain_id": domain_id, "owner_id": user_id},
+            ).one()
+            assert inserted_link.id is not None
+            assert inserted_link.default_action == "allow"
+
+            permission_id = connection.scalar(
+                text(
+                    """
+                    INSERT INTO short_link_permissions (short_link_id, user_id, created_at)
+                    VALUES (:short_link_id, :user_id, now())
+                    RETURNING id
+                    """
+                ),
+                {"short_link_id": existing_link_id, "user_id": user_id},
+            )
+            assert permission_id is not None
+
+            target_id = connection.scalar(
+                text(
+                    """
+                    INSERT INTO target_urls
+                        (short_link_id, url, url_type, weight, is_active, created_at)
+                    VALUES (:short_link_id, 'https://f31.example.com', 'allowed', 1, true, now())
+                    RETURNING id
+                    """
+                ),
+                {"short_link_id": existing_link_id},
+            )
+            assert target_id is not None
+
+        defaults = {
+            table_name: {
+                column["name"]: column["default"]
+                for column in inspect(engine).get_columns(table_name)
+            }
+            for table_name in ("short_links", "short_link_permissions", "target_urls")
+        }
+        assert "gen_random_uuid" in defaults["short_links"]["id"]
+        assert defaults["short_links"]["default_action"] == "'allow'::character varying"
+        assert "gen_random_uuid" in defaults["short_link_permissions"]["id"]
+        assert "gen_random_uuid" in defaults["target_urls"]["id"]
+        assert defaults["short_links"]["is_custom_alias"] is None
+        assert defaults["short_links"]["is_active"] is None
+        assert defaults["target_urls"]["weight"] is None
+        assert defaults["target_urls"]["is_active"] is None
+    finally:
+        engine.dispose()
+
+
 def test_short_link_lifecycle_migrates_legacy_rows_and_round_trips(migration_database_url):
     run_alembic(migration_database_url, "upgrade", BASE_REVISION)
     engine = create_engine(migration_database_url)
@@ -139,23 +207,87 @@ def test_short_link_lifecycle_migrates_legacy_rows_and_round_trips(migration_dat
         } <= indexes.keys()
         assert indexes["idx_short_links_domain_created_at"]["column_names"] == ["domain_id", "created_at"]
         assert indexes["idx_short_links_domain_owner_created_at"]["column_names"] == ["domain_id", "owner_id", "created_at"]
+        assert indexes["idx_short_links_domain_created_at"]["column_sorting"] == {
+            "created_at": ("desc",)
+        }
+        assert indexes["idx_short_links_domain_owner_created_at"]["column_sorting"] == {
+            "created_at": ("desc",)
+        }
         short_link_fks = {fk["constrained_columns"][0]: fk for fk in inspector.get_foreign_keys("short_links")}
+        assert short_link_fks["domain_id"]["name"] == "fk_short_links_domain"
         assert short_link_fks["domain_id"]["options"]["ondelete"] == "RESTRICT"
+        assert short_link_fks["owner_id"]["name"] == "fk_short_links_owner"
         assert short_link_fks["owner_id"]["options"]["ondelete"] == "RESTRICT"
+        assert short_link_fks["deleted_by"]["name"] == "fk_short_links_deleted_by"
         assert short_link_fks["deleted_by"]["options"]["ondelete"] == "RESTRICT"
         permission_fks = {fk["constrained_columns"][0]: fk for fk in inspector.get_foreign_keys("short_link_permissions")}
+        assert permission_fks["short_link_id"]["name"] == "fk_short_link_permissions_link"
         assert permission_fks["short_link_id"]["options"]["ondelete"] == "RESTRICT"
+        assert permission_fks["user_id"]["name"] == "fk_short_link_permissions_user"
         assert permission_fks["user_id"]["options"]["ondelete"] == "RESTRICT"
+        assert permission_fks["granted_by"]["name"] == "fk_short_link_permissions_granted_by"
         assert permission_fks["granted_by"]["options"]["ondelete"] == "RESTRICT"
 
         run_alembic(migration_database_url, "downgrade", BASE_REVISION)
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             assert connection.scalar(
                 text("SELECT description FROM short_links WHERE id = :id"), {"id": named_link_id}
             ) == "Legacy campaign"
+            restored_link = connection.execute(
+                text(
+                    """
+                    INSERT INTO short_links
+                        (domain_id, short_code, is_custom_alias, description, owner_id,
+                         is_active, created_at, updated_at)
+                    VALUES (:domain_id, 'downgraded-defaults', false, 'Downgraded', :owner_id,
+                            true, now(), now())
+                    RETURNING id, default_action
+                    """
+                ),
+                {"domain_id": domain_id, "owner_id": user_id},
+            ).one()
+            assert restored_link.default_action == "allow"
+            assert restored_link.id is not None
+
+            restored_permission_id = connection.scalar(
+                text(
+                    """
+                    INSERT INTO short_link_permissions (short_link_id, user_id, created_at)
+                    VALUES (:short_link_id, :user_id, now())
+                    RETURNING id
+                    """
+                ),
+                {"short_link_id": named_link_id, "user_id": user_id},
+            )
+            assert restored_permission_id is not None
+
+            restored_target_id = connection.scalar(
+                text(
+                    """
+                    INSERT INTO target_urls
+                        (short_link_id, url, url_type, weight, is_active, created_at)
+                    VALUES (:short_link_id, 'https://downgraded.example.com', 'allowed', 1, true, now())
+                    RETURNING id
+                    """
+                ),
+                {"short_link_id": named_link_id},
+            )
+            assert restored_target_id is not None
         downgraded_columns = {column["name"] for column in inspect(engine).get_columns("short_links")}
         assert "description" in downgraded_columns
         assert "name" not in downgraded_columns
+        downgraded_defaults = {
+            column["name"]: column["default"]
+            for column in inspect(engine).get_columns("short_links")
+        }
+        assert "gen_random_uuid" in downgraded_defaults["id"]
+        assert downgraded_defaults["default_action"] == "'allow'::character varying"
+
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT name FROM short_links WHERE short_code = 'downgraded-defaults'")
+            ) == "Downgraded"
     finally:
         engine.dispose()
 
