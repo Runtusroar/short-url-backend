@@ -1,6 +1,9 @@
 """End-to-end API integration tests."""
 
+from sqlalchemy import text
 from httpx import AsyncClient
+
+from tests.conftest import _sync_engine
 
 
 # ---------------------------------------------------------------------------
@@ -490,4 +493,210 @@ async def test_client_can_view_granted_link(client, admin_token, client_token, d
         headers={**_auth(client_token), **_host()},
     )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Short link error branches
+# ---------------------------------------------------------------------------
+
+
+async def test_create_short_link_domain_not_found(client, admin_token):
+    resp = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={"domain_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_create_short_link_inactive_domain(client, admin_token):
+    resp = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": "inactive.test", "is_active": False},
+    )
+    assert resp.status_code == 200
+    domain = resp.json()
+
+    resp = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host("inactive.test")},
+        json={"domain_id": domain["id"]},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "DOMAIN_INACTIVE"
+
+
+async def test_operator_cannot_create_in_unauthorized_domain(
+    client, admin_token, operator_token, default_domain
+):
+    resp = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": "private.test"},
+    )
+    assert resp.status_code == 200
+    private_domain = resp.json()
+
+    resp = await client.post(
+        "/api/short-links",
+        headers={**_auth(operator_token), **_host("private.test")},
+        json={"domain_id": private_domain["id"]},
+    )
+    assert resp.status_code == 403
+
+
+async def test_target_url_not_found(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    resp = await client.put(
+        f"/api/short-links/{link['id']}/urls/00000000-0000-0000-0000-000000000000",
+        headers={**_auth(admin_token), **_host()},
+        json={"url": "https://nope.example.com"},
+    )
+    assert resp.status_code == 404
+
+    resp = await client.delete(
+        f"/api/short-links/{link['id']}/urls/00000000-0000-0000-0000-000000000000",
+        headers={**_auth(admin_token), **_host()},
+    )
+    assert resp.status_code == 404
+
+
+async def test_access_rule_not_found(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    resp = await client.put(
+        f"/api/short-links/{link['id']}/rules/00000000-0000-0000-0000-000000000000",
+        headers={**_auth(admin_token), **_host()},
+        json={"priority": 5},
+    )
+    assert resp.status_code == 404
+
+    resp = await client.delete(
+        f"/api/short-links/{link['id']}/rules/00000000-0000-0000-0000-000000000000",
+        headers={**_auth(admin_token), **_host()},
+    )
+    assert resp.status_code == 404
+
+
+async def test_permission_grant_requires_client_user(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    resp = await client.post(
+        f"/api/short-links/{link['id']}/permissions",
+        headers={**_auth(admin_token), **_host()},
+        json={"user_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_permission_grant_requires_domain_access(
+    client, admin_token, operator_token, default_domain
+):
+    # create a new client user without domain access
+    resp = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": "nodomain", "password": "password", "role": "client", "domain_ids": []},
+    )
+    assert resp.status_code == 200
+    isolated_client = resp.json()
+
+    link = await _create_short_link(client, operator_token, default_domain["id"])
+
+    resp = await client.post(
+        f"/api/short-links/{link['id']}/permissions",
+        headers={**_auth(operator_token), **_host()},
+        json={"user_id": isolated_client["id"]},
+    )
+    assert resp.status_code == 403
+
+
+async def test_revoke_permission_not_found(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    resp = await client.delete(
+        f"/api/short-links/{link['id']}/permissions/00000000-0000-0000-0000-000000000000",
+        headers={**_auth(admin_token), **_host()},
+    )
+    assert resp.status_code == 404
+
+
+async def test_redirect_inactive_short_link(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_target_url(client, admin_token, link["id"], "https://inactive.example.com")
+
+    resp = await client.put(
+        f"/api/short-links/{link['id']}",
+        headers={**_auth(admin_token), **_host()},
+        json={"is_active": False},
+    )
+    assert resp.status_code == 200
+
+    resp = await client.get(
+        f"/{link['short_code']}",
+        headers=_host(),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 404
+
+
+async def test_redirect_no_target_url(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    resp = await client.get(
+        f"/{link['short_code']}",
+        headers=_host(),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "NOT_FOUND"
+
+
+async def test_login_disabled_user(client, admin_token):
+    resp = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={"username": "disabled", "password": "password", "role": "operator", "domain_ids": []},
+    )
+    assert resp.status_code == 200
+    user = resp.json()
+
+    with _sync_engine.connect() as conn:
+        conn.execute(
+            text("UPDATE users SET is_active = false WHERE id = :id"),
+            {"id": user["id"]},
+        )
+        conn.commit()
+
+    resp = await client.post(
+        "/api/auth/login",
+        data={"username": "disabled", "password": "password"},
+    )
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Blacklist redirect
+# ---------------------------------------------------------------------------
+
+
+async def test_redirect_blacklisted_ip(client, admin_token, default_domain):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_target_url(client, admin_token, link["id"], "https://blocked.example.com")
+
+    await client.post(
+        "/api/ip-blacklist",
+        headers=_auth(admin_token),
+        json={"ip": "192.168.1.1", "reason": "test"},
+    )
+
+    resp = await client.get(
+        f"/{link['short_code']}",
+        headers={**_host(), "X-Forwarded-For": "192.168.1.1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "PERMISSION_DENIED"
 

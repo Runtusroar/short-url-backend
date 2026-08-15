@@ -25,10 +25,10 @@ test:
 	uv run pytest -v
 
 test-unit:
-	uv run pytest -v tests/test_auth.py tests/test_main.py tests/test_redirect.py tests/test_short_code.py
+	uv run pytest -v tests/test_auth.py tests/test_main.py tests/test_redirect.py tests/test_short_code.py tests/test_services_edge.py
 
 test-integration:
-	uv run pytest -v tests/test_api.py
+	uv run pytest -v tests/test_api.py tests/test_blacklist.py tests/test_logs_extended.py
 
 migrate:
 	docker-compose exec app alembic upgrade head
