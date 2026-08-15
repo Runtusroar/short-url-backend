@@ -1,9 +1,12 @@
 """End-to-end API integration tests."""
 
+import uuid
+
 import pytest
 from sqlalchemy import text
 from httpx import AsyncClient
 
+from app.core.security import get_password_hash
 from tests.conftest import _sync_engine
 
 
@@ -73,6 +76,40 @@ async def test_login_wrong_password(client):
     )
     assert resp.status_code == 401
     assert resp.json()["code"] == "UNAUTHORIZED"
+
+
+async def test_short_legacy_username_can_log_in_after_normalization(client):
+    with _sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (:id, 'xy', :password_hash, 'client', true, now(), now())
+                """
+            ),
+            {"id": str(uuid.uuid4()), "password_hash": get_password_hash("legacy-password")},
+        )
+    response = await client.post(
+        "/api/auth/login",
+        data={"username": " XY ", "password": "legacy-password"},
+    )
+    assert response.status_code == 200
+
+
+async def test_short_legacy_username_is_returned_by_admin_user_list(client, admin_token):
+    with _sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (:id, 'xz', :password_hash, 'client', true, now(), now())
+                """
+            ),
+            {"id": str(uuid.uuid4()), "password_hash": get_password_hash("legacy-password")},
+        )
+    response = await client.get("/api/admin/users", headers=_auth(admin_token))
+    assert response.status_code == 200
+    assert any(user["username"] == "xz" for user in response.json())
 
 
 async def test_me(client, admin_token):

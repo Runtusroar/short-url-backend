@@ -7,16 +7,13 @@ from app.models.enums import UserRole
 
 
 def normalize_username(value: str) -> str:
-    normalized = value.strip().lower()
-    if not 3 <= len(normalized) <= 64:
-        raise ValueError("用户名长度必须在 3 到 64 个字符之间")
-    return normalized
+    return value.strip().lower()
 
 
 class UserBase(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
 
-    @field_validator("username")
+    @field_validator("username", mode="before")
     @classmethod
     def normalize_username_value(cls, value: str) -> str:
         return normalize_username(value)
@@ -35,15 +32,16 @@ class UserUpdate(BaseModel):
     domain_ids: list[UUID] | None = None
     is_active: bool | None = None
 
-    @field_validator("username")
+    @field_validator("username", mode="before")
     @classmethod
     def normalize_username_value(cls, value: str | None) -> str | None:
         return normalize_username(value) if value is not None else None
 
 
-class UserResponse(UserBase):
+class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    username: str
     role: str
     is_active: bool
     created_at: datetime
