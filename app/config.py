@@ -41,10 +41,10 @@ class Settings(BaseSettings):
             errors.append("COOKIE_SECURE must be true")
         if "*" in self.cors_origin_list:
             errors.append("CORS_ORIGINS must not contain *")
-        if not self.database_url.strip():
-            errors.append("DATABASE_URL must not be empty")
-        if not self.redis_url.strip():
-            errors.append("REDIS_URL must not be empty")
+        if "database_url" not in self.model_fields_set or not self.database_url.strip():
+            errors.append("DATABASE_URL must be explicitly configured and not be empty")
+        if "redis_url" not in self.model_fields_set or not self.redis_url.strip():
+            errors.append("REDIS_URL must be explicitly configured and not be empty")
         if errors:
             raise ValueError("; ".join(errors))
         return self
