@@ -16,7 +16,7 @@
 - The repaired index names and ordered columns are `idx_short_links_domain(domain_id)`, `idx_access_logs_domain(domain_id)`, `idx_access_logs_short_link(short_link_id)`, `idx_access_logs_plus8(short_link_id, accessed_at_plus8)`, and `idx_access_logs_dedup(short_link_id, ip, dedup_bucket)`.
 - Existing tables, columns, defaults, CHECK constraints, unique constraints, unrelated foreign keys, and application behavior remain unchanged.
 - `access_logs.target_url_id -> target_urls.id ON DELETE SET NULL` is the canonical contract. Revision `d6e8f0a21b35` converges correctly configured, differently named, and drifted deployed constraints to the canonical named foreign key without raw SQL.
-- The `d6e8f0a21b35` downgrade is intentionally a no-op because `c4b7e2a19f03` already requires the canonical `SET NULL` contract and unknown deployed drift must not be invented or restored.
+- The `d6e8f0a21b35` downgrade preserves `SET NULL` but restores the historical name `access_logs_target_url_id_fkey`, allowing the immutable `a9e56b03bf5f` downgrade to remove it and restore its parent revision's `NO ACTION` state.
 - `access_logs.short_link_id/domain_id` delete semantics, `description -> name`, soft deletion, INET fields, rule semantics, audit fields, and final composite indexes remain Phase 4 work.
 - Migration tests may create and drop only databases whose names are generated in-process with prefix `shorturl_migration_` followed by exactly 32 lowercase hex characters.
 - Test cleanup validates the generated database name before every `DROP DATABASE ... WITH (FORCE)` and never drops the shared `shorturl_test`, development, or production database.
@@ -508,7 +508,7 @@ git commit -m "build: validate schema migration state"
 - Produces the sole Alembic head `d6e8f0a21b35` with `down_revision = "c4b7e2a19f03"`.
 - Repairs databases whose Alembic version was stamped past `a9e56b03bf5f` while `access_logs.target_url_id` retained `NO ACTION`.
 - Uses `op.get_bind()` and SQLAlchemy inspection to drop every foreign key whose ordered constrained columns are exactly `target_url_id`, using only inspector-returned names, then creates canonical `fk_access_logs_target_url ON DELETE SET NULL`.
-- Leaves the five baseline indexes intact and makes downgrade a documented no-op.
+- Leaves the five baseline indexes intact; downgrade safely normalizes the FK to the historical name and `SET NULL` semantics expected by the parent migration chain.
 
 - [ ] **Step 1: Prove the stamped drift path is red**
 
@@ -521,7 +521,9 @@ revision-chain contract also fails because `d6e8f0a21b35` does not exist.
 
 Inspect `access_logs` foreign keys through SQLAlchemy, match constrained columns
 exactly, safely drop all matching named constraints, and create the canonical
-foreign key. Do not edit any existing revision or use raw SQL.
+foreign key. Apply the same inspection in downgrade while restoring the
+historical constraint name required by `a9e56b03bf5f`. Do not edit any existing
+revision or use raw SQL.
 
 - [ ] **Step 3: Verify migration paths and the whole application**
 
@@ -548,6 +550,7 @@ Phase 3 is complete only when:
 - A disposable database at `a9e56b03bf5f` upgrades to repaired head.
 - A disposable database upgraded to `b1e5f6851085`, stamped to `a9e56b03bf5f`, and upgraded to head converges its target URL foreign key while retaining all five indexes.
 - Repair downgrade/upgrade round-trip passes.
+- Downgrading from head through `a9e56b03bf5f` to `b1e5f6851085` succeeds and restores the historical `NO ACTION` target URL foreign key.
 - `alembic check` reports no pending operations against a migrated disposable database.
 - Preflight accepts empty/repairable states, rejects conflicting same-named indexes, and postflight requires the repaired schema.
 - `make migrate` orders preflight -> upgrade -> postflight.

@@ -75,6 +75,15 @@ def test_repair_revision_round_trip(migration_database_url):
     ]
 
 
+def test_repaired_head_downgrades_through_historical_fk_revision(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    run_alembic(migration_database_url, "downgrade", "b1e5f6851085")
+
+    assert target_url_ondelete(migration_database_url) is None
+
+
 def test_alembic_check_has_no_pending_operations(migration_database_url):
     run_alembic(migration_database_url, "upgrade", "head")
     result = run_alembic(migration_database_url, "check")
