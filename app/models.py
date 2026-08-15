@@ -72,6 +72,8 @@ class ShortLink(Base):
     updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
     owner = relationship("User")
+    target_urls = relationship("TargetUrl", cascade="all, delete-orphan", lazy="selectin")
+    access_rules = relationship("AccessRule", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (UniqueConstraint("domain_id", "short_code", name="uq_domain_short_code"),)
 
