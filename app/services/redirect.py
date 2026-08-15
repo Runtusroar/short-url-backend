@@ -21,7 +21,8 @@ def _match_referer(referer: str | None, pattern: str | None) -> bool:
         return True
     if referer is None:
         return False
-    return fnmatch.fnmatch(referer, pattern)
+    patterns = [p.strip() for p in pattern.split(",") if p.strip()]
+    return any(fnmatch.fnmatch(referer, p) for p in patterns)
 
 
 def rule_matches(

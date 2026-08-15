@@ -80,6 +80,12 @@ def test_match_referer_pattern():
     assert _match_referer("https://example.com/foo", None) is True
 
 
+def test_match_referer_multiple_patterns():
+    assert _match_referer("https://facebook.com/foo", "*facebook*,*tiktok*") is True
+    assert _match_referer("https://www.tiktok.com/foo", "*facebook*,*tiktok*") is True
+    assert _match_referer("https://google.com/foo", "*facebook*,*tiktok*") is False
+
+
 def test_rule_matches_all_conditions():
     rule = MagicMock()
     rule.countries = ["CN"]
