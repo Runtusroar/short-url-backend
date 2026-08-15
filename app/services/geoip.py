@@ -21,7 +21,11 @@ def get_country(ip: str) -> str | None:
     if not reader:
         return None
     try:
-        response = reader.city(ip)
+        db_type = reader.metadata().database_type
+        if "Country" in db_type:
+            response = reader.country(ip)
+        else:
+            response = reader.city(ip)
         return response.country.iso_code
     except (geoip2.errors.AddressNotFoundError, ValueError):
         return None
