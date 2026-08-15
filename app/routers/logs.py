@@ -118,3 +118,45 @@ async def daily_stats(
         )
         for row in rows
     ]
+
+
+@router.get("/daily-summary", response_model=list[DailyStatsResponse])
+async def daily_summary(
+    days: int = Query(7, ge=1, le=30),
+    domain_id: UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_domain: Domain = Depends(require_domain_access),
+):
+    """Return aggregated daily stats for the current domain."""
+    from datetime import date, timedelta
+
+    effective_domain = await _resolve_effective_domain(domain_id, current_user, current_domain, db)
+    start_date = date.today() - timedelta(days=days - 1)
+
+    result = await db.execute(
+        select(
+            AccessLog.accessed_at_plus8.label("date"),
+            func.count().label("total"),
+            func.count().filter(AccessLog.result == "allowed").label("allowed"),
+            func.count().filter(AccessLog.result.in_(["denied", "blocked"])).label("denied"),
+            func.count(distinct(AccessLog.ip)).label("unique_ips"),
+        )
+        .where(
+            AccessLog.domain_id == effective_domain.id,
+            AccessLog.accessed_at_plus8 >= start_date,
+        )
+        .group_by(AccessLog.accessed_at_plus8)
+        .order_by(AccessLog.accessed_at_plus8.asc())
+    )
+    rows = result.all()
+    return [
+        DailyStatsResponse(
+            date=str(row.date),
+            total=row.total,
+            allowed=row.allowed,
+            denied=row.denied,
+            unique_ips=row.unique_ips,
+        )
+        for row in rows
+    ]
