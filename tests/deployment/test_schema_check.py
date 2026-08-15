@@ -4,6 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from sqlalchemy import create_engine, text
+
 from scripts.check_schema import evaluate_schema
 from tests.migrations.conftest import migration_database_url  # noqa: F401
 from tests.migrations.support import run_alembic
@@ -20,6 +23,10 @@ EXPECTED_INDEXES = {
     },
 }
 APPLICATION_TABLES = {"short_links", "access_logs"}
+EXPECTED_UNIQUENESS = {
+    table: {name: False for name in definitions}
+    for table, definitions in EXPECTED_INDEXES.items()
+}
 
 
 def run_schema_check(database_url: str, mode: str) -> subprocess.CompletedProcess[str]:
@@ -57,6 +64,16 @@ def test_pre_allows_empty_database():
         "indexes": "not_applicable",
         "target_url_ondelete": None,
     }
+
+
+def test_pre_treats_partial_application_schema_as_incomplete():
+    result = evaluate_schema(
+        mode="pre", tables={"users"}, indexes={}, target_url_ondelete=None
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "schema_incomplete"
+    assert result["detail"] == "access_logs,short_links"
 
 
 def test_pre_allows_all_five_indexes_missing():
@@ -107,6 +124,7 @@ def test_pre_rejects_same_named_wrong_index_columns():
         tables=APPLICATION_TABLES,
         indexes=indexes,
         target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
     )
 
     assert result["status"] == "error"
@@ -134,6 +152,28 @@ def test_pre_rejects_same_named_unique_index():
     assert result["detail"] == "short_links.idx_short_links_domain"
 
 
+@pytest.mark.parametrize(
+    "index_uniqueness",
+    [
+        None,
+        {"short_links": {"idx_short_links_domain": None}},
+    ],
+    ids=("missing", "none"),
+)
+def test_pre_rejects_present_index_with_unknown_uniqueness(index_uniqueness):
+    result = evaluate_schema(
+        mode="pre",
+        tables=APPLICATION_TABLES,
+        indexes=EXPECTED_INDEXES,
+        target_url_ondelete="SET NULL",
+        index_uniqueness=index_uniqueness,
+    )
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "index_uniqueness_unknown"
+    assert result["detail"] == "short_links.idx_short_links_domain"
+
+
 def test_post_requires_every_expected_index():
     indexes = {
         table: definitions.copy() for table, definitions in EXPECTED_INDEXES.items()
@@ -145,6 +185,7 @@ def test_post_requires_every_expected_index():
         tables=APPLICATION_TABLES,
         indexes=indexes,
         target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
     )
 
     assert result["status"] == "error"
@@ -158,6 +199,7 @@ def test_post_requires_target_url_set_null():
         tables=APPLICATION_TABLES,
         indexes=EXPECTED_INDEXES,
         target_url_ondelete="CASCADE",
+        index_uniqueness=EXPECTED_UNIQUENESS,
     )
 
     assert result["status"] == "error"
@@ -171,6 +213,7 @@ def test_post_reports_ready_schema():
         tables=APPLICATION_TABLES,
         indexes=EXPECTED_INDEXES,
         target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
     )
 
     assert result == {
@@ -215,6 +258,23 @@ def test_cli_pre_allows_empty_disposable_database(migration_database_url):
     }
 
 
+def test_cli_pre_rejects_partial_application_schema(migration_database_url):
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY)"))
+    finally:
+        engine.dispose()
+
+    result = run_schema_check(migration_database_url, "pre")
+
+    assert result.returncode == 1
+    payload = assert_single_public_json(result, migration_database_url)
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "schema_incomplete"
+    assert payload["detail"] == "access_logs,short_links"
+
+
 def test_cli_pre_allows_old_head_and_reports_old_target_fk(migration_database_url):
     run_alembic(migration_database_url, "upgrade", "b1e5f6851085")
 
@@ -228,6 +288,31 @@ def test_cli_pre_allows_old_head_and_reports_old_target_fk(migration_database_ur
         "indexes": "missing",
         "target_url_ondelete": None,
     }
+
+
+def test_cli_pre_rejects_same_named_unique_postgresql_index(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", "a9e56b03bf5f")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX idx_short_links_domain "
+                    "ON short_links (domain_id)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    result = run_schema_check(migration_database_url, "pre")
+
+    assert result.returncode == 1
+    payload = assert_single_public_json(result, migration_database_url)
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "index_uniqueness_mismatch"
+    assert payload["detail"] == "short_links.idx_short_links_domain"
 
 
 def test_cli_post_requires_and_reports_repaired_head(migration_database_url):

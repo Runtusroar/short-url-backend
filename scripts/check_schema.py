@@ -19,7 +19,18 @@ EXPECTED_INDEXES = {
         "idx_access_logs_dedup": ("short_link_id", "ip", "dedup_bucket"),
     },
 }
-APPLICATION_TABLES = set(EXPECTED_INDEXES)
+TARGET_TABLES = set(EXPECTED_INDEXES)
+CURRENT_APPLICATION_TABLES = {
+    "users",
+    "domains",
+    "user_domains",
+    "ip_blacklist",
+    "short_links",
+    "short_link_permissions",
+    "target_urls",
+    "access_rules",
+    "access_logs",
+}
 
 
 def _error(
@@ -48,7 +59,7 @@ def evaluate_schema(
     tables: set[str],
     indexes: dict[str, dict[str, tuple[str, ...]]],
     target_url_ondelete: str | None,
-    index_uniqueness: dict[str, dict[str, bool]] | None = None,
+    index_uniqueness: dict[str, dict[str, bool | None]] | None = None,
 ) -> dict[str, object]:
     """Evaluate inspected schema facts without opening a database connection.
 
@@ -60,7 +71,7 @@ def evaluate_schema(
     normalized_ondelete = (
         target_url_ondelete.upper() if target_url_ondelete is not None else None
     )
-    present_application_tables = tables & APPLICATION_TABLES
+    present_application_tables = tables & CURRENT_APPLICATION_TABLES
 
     if mode not in {"pre", "post"}:
         return _error(
@@ -90,7 +101,7 @@ def evaluate_schema(
             target_url_ondelete=None,
         )
 
-    missing_tables = sorted(APPLICATION_TABLES - present_application_tables)
+    missing_tables = sorted(TARGET_TABLES - tables)
     if missing_tables:
         return _error(
             mode=mode,
@@ -121,7 +132,17 @@ def evaluate_schema(
                     indexes="invalid",
                     target_url_ondelete=normalized_ondelete,
                 )
-            if unique_by_name.get(index_name, False):
+            unique = unique_by_name.get(index_name)
+            if not isinstance(unique, bool):
+                return _error(
+                    mode=mode,
+                    error_code="index_uniqueness_unknown",
+                    detail=identifier,
+                    schema="drifted",
+                    indexes="invalid",
+                    target_url_ondelete=normalized_ondelete,
+                )
+            if unique:
                 return _error(
                     mode=mode,
                     error_code="index_uniqueness_mismatch",
@@ -174,7 +195,7 @@ def inspect_schema(
 ) -> tuple[
     set[str],
     dict[str, dict[str, tuple[str, ...]]],
-    dict[str, dict[str, bool]],
+    dict[str, dict[str, bool | None]],
     str | None,
 ]:
     engine = create_engine(database_url)
@@ -182,7 +203,7 @@ def inspect_schema(
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
         indexes: dict[str, dict[str, tuple[str, ...]]] = {}
-        uniqueness: dict[str, dict[str, bool]] = {}
+        uniqueness: dict[str, dict[str, bool | None]] = {}
 
         for table_name, expected_by_name in EXPECTED_INDEXES.items():
             indexes[table_name] = {}
@@ -196,8 +217,9 @@ def inspect_schema(
                 indexes[table_name][index_name] = tuple(
                     index.get("column_names") or ()
                 )
-                uniqueness[table_name][index_name] = bool(
-                    index.get("unique", False)
+                unique = index.get("unique")
+                uniqueness[table_name][index_name] = (
+                    unique if isinstance(unique, bool) else None
                 )
 
         target_url_ondelete = None
