@@ -1,4 +1,4 @@
-.PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
+.PHONY: env check-config up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
 
 # Auto-detect docker compose command (modern Docker uses "docker compose", older versions use "docker-compose")
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
@@ -6,7 +6,14 @@ DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo '
 u ?= admin
 p ?= admin123456
 
-up:
+env:
+	@$(DOCKER_COMPOSE) run --rm --no-deps app python scripts/check_config.py
+
+check-config:
+	@$(DOCKER_COMPOSE) config --quiet
+	@$(DOCKER_COMPOSE) run --rm --build --no-deps app python scripts/check_config.py
+
+up: check-config
 	$(DOCKER_COMPOSE) up -d
 
 down:
@@ -34,7 +41,7 @@ test-integration:
 	uv run pytest -v tests/test_api.py tests/test_blacklist.py tests/test_logs_extended.py
 
 migrate:
-	$(DOCKER_COMPOSE) exec app alembic upgrade head
+	$(DOCKER_COMPOSE) run --rm app alembic upgrade head
 
 makemigrations:
 	$(DOCKER_COMPOSE) exec app alembic revision --autogenerate -m "$(m)"
