@@ -24,3 +24,20 @@ def test_runbook_uses_makefile_entrypoints():
         "make restart",
     ):
         assert command in text
+
+
+def test_update_backup_uses_restricted_operator_directory():
+    text = DOC.read_text()
+    assert "BACKUP_DIR=/var/backups/short-url" in text
+    assert 'install -d -m 700 -o "$(id -un)" -g "$(id -gn)" "$BACKUP_DIR"' in text
+    assert "umask 077" in text
+    assert '"$BACKUP_DIR/postgres-before-update-$(date +%F-%H%M%S).sql"' in text
+
+
+def test_rollback_rebuilds_previous_commit_before_starting_services():
+    text = DOC.read_text()
+    rollback = text.split("## Rollback", maxsplit=1)[1]
+    checkout = rollback.index("git checkout --detach <previous-commit-or-tag>")
+    build = rollback.index("make build")
+    up = rollback.index("make up")
+    assert checkout < build < up

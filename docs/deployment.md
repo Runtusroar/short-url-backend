@@ -114,23 +114,38 @@ make restart
 
 Choose the commit or release tag to deploy, pull it into the checkout, and back
 up PostgreSQL before changing containers. Substitute the database username and
-database name from this machine's `.env` in the backup command.
+database name from this machine's `.env` in the backup command. Store backups
+in an operator-controlled directory with owner-only permissions.
 
 ```bash
 git fetch --tags origin
 git checkout --detach <chosen-commit-or-tag>
-docker compose exec -T db pg_dump -U shorturl shorturl > postgres-before-update.sql
+BACKUP_DIR=/var/backups/short-url
+sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" "$BACKUP_DIR"
+umask 077
+docker compose exec -T db pg_dump -U shorturl shorturl > "$BACKUP_DIR/postgres-before-update-$(date +%F-%H%M%S).sql"
 make build
 make migrate
 make up
 ```
 
 `make up` recreates the services from the newly built image. Repeat the health
-and short-link verification after every update.
+and short-link verification after every update. Backups can contain sensitive
+data: retain them on encrypted operator-controlled storage according to the
+approved retention policy, and remove an individual expired backup only after
+confirming its exact path.
 
 ## Rollback
 
-Restore the previous application commit or image, rebuild it if needed, then run
-`make up` and repeat the verification steps. Do not downgrade the database
-unless the target release documents a migration procedure that explicitly
-supports that downgrade.
+Restore the previous application commit or image and rebuild that prior release
+before starting services, so Compose cannot reuse the newer image:
+
+```bash
+git fetch --tags origin
+git checkout --detach <previous-commit-or-tag>
+make build
+make up
+```
+
+Repeat the verification steps. Do not downgrade the database unless the target
+release documents a migration procedure that explicitly supports that downgrade.
