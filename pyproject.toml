@@ -29,9 +29,3 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-filterwarnings = [
-    "ignore::DeprecationWarning:fastapi.*",
-    "ignore::DeprecationWarning:starlette.*",
-    "ignore::DeprecationWarning:httpx.*",
-    "ignore::DeprecationWarning:pytest_asyncio.*",
-]
