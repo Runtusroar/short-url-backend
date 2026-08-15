@@ -38,7 +38,7 @@ def _insert_user(conn, user_id: uuid.UUID, username: str, password: str, role: s
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def setup_database():
     """Create a fresh test schema and seed base accounts."""
     Base.metadata.drop_all(_sync_engine)

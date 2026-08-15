@@ -1,10 +1,7 @@
-"""Service-layer edge case tests."""
+"""Redirect service edge case tests."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from app.integrations.maxmind.country import get_country, get_geoip_reader
 from app.features.redirect.service import (
     _match_list,
     _match_referer,
@@ -12,13 +9,7 @@ from app.features.redirect.service import (
     rule_matches,
     weighted_random_choice,
 )
-from app.features.short_links.short_code import validate_custom_alias
 from app.features.redirect.ua import get_platform
-
-
-# -----------------------------------------------------------------------------
-# User agent platform detection
-# -----------------------------------------------------------------------------
 
 
 def test_ua_platform_variants():
@@ -39,45 +30,6 @@ def test_bot_detection_precedes_pc_detection(monkeypatch):
 
     monkeypatch.setattr("app.features.redirect.ua.parse", lambda value: BotThatLooksLikePc())
     assert get_platform("spoofed-bot") == "bot"
-
-
-# -----------------------------------------------------------------------------
-# GeoIP
-# -----------------------------------------------------------------------------
-
-
-def test_geoip_without_reader():
-    with patch("app.integrations.maxmind.country.settings") as mock_settings:
-        mock_settings.geoip_db_path = None
-        assert get_geoip_reader() is None
-        assert get_country("8.8.8.8") is None
-
-
-def test_geoip_invalid_ip():
-    reader = MagicMock()
-    reader.city.side_effect = ValueError("invalid ip")
-    with patch("app.integrations.maxmind.country.get_geoip_reader", return_value=reader):
-        assert get_country("not-an-ip") is None
-
-
-# -----------------------------------------------------------------------------
-# Short code validation
-# -----------------------------------------------------------------------------
-
-
-def test_custom_alias_reserved_prefix():
-    assert validate_custom_alias("api") is False
-    assert validate_custom_alias("admin") is False
-    assert validate_custom_alias("openapi") is False
-
-
-def test_custom_alias_too_short():
-    assert validate_custom_alias("ab") is False
-
-
-# -----------------------------------------------------------------------------
-# Redirect rule matching
-# -----------------------------------------------------------------------------
 
 
 def test_match_list_empty_candidates():

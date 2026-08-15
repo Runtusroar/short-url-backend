@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-DOC = Path(__file__).resolve().parents[1] / "docs" / "deployment.md"
+DOC = Path(__file__).resolve().parents[2] / "docs" / "deployment.md"
 
 
 def test_nginx_overwrites_single_proxy_headers():
