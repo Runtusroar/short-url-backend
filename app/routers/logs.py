@@ -90,7 +90,7 @@ async def daily_stats(
 ):
     effective_domain = await _resolve_effective_domain(domain_id, current_user, current_domain, db)
     if not await _can_view_link(db, current_user, short_link_id):
-        raise HTTPException(status_code=403, detail="Permission denied")
+        raise PermissionDeniedError()
 
     result = await db.execute(
         select(

@@ -43,23 +43,6 @@ class DomainResponse(DomainBase):
     created_at: datetime
 
 
-class UserDomainCreate(BaseModel):
-    user_id: UUID
-    domain_id: UUID
-
-
-class UserDomainResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    user_id: UUID
-    domain_id: UUID
-    created_at: datetime
-
-
-class UserLogin(UserBase):
-    password: str
-
-
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

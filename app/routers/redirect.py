@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import AsyncSessionLocal
+from app.database import get_db
 from app.domains import _get_host
 from app.exceptions import NotFoundError, PermissionDeniedError
 from app.models import AccessLog, Domain, IpBlacklist, ShortLink, TargetUrl
@@ -75,34 +75,37 @@ async def _resolve_domain(db: AsyncSession, request: Request) -> Domain:
 
 
 @router.api_route("/{short_code}", methods=["GET", "HEAD"])
-async def redirect(short_code: str, request: Request):
-    async with AsyncSessionLocal() as db:
-        domain = await _resolve_domain(db, request)
-        result = await db.execute(
-            select(ShortLink).where(
-                ShortLink.domain_id == domain.id,
-                ShortLink.short_code == short_code,
-                ShortLink.is_active == True,
-            )
+async def redirect(
+    short_code: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    domain = await _resolve_domain(db, request)
+    result = await db.execute(
+        select(ShortLink).where(
+            ShortLink.domain_id == domain.id,
+            ShortLink.short_code == short_code,
+            ShortLink.is_active == True,
         )
-        link = result.scalar_one_or_none()
-        if not link:
-            raise NotFoundError("短链")
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise NotFoundError("短链")
 
-        ip = _get_client_ip(request)
-        is_blacklisted = await _is_blacklisted(db, ip)
-        country = get_country(ip)
-        ua_string = request.headers.get("user-agent")
-        platform = get_platform(ua_string)
-        referer = request.headers.get("referer")
+    ip = _get_client_ip(request)
+    is_blacklisted = await _is_blacklisted(db, ip)
+    country = get_country(ip)
+    ua_string = request.headers.get("user-agent")
+    platform = get_platform(ua_string)
+    referer = request.headers.get("referer")
 
-        action, target = await get_redirect_target(db, link, country, platform, referer, is_blacklisted)
+    action, target = await get_redirect_target(db, link, country, platform, referer, is_blacklisted)
 
-        await _log_access(db, link, domain, target, action, ip, country, ua_string, platform, referer)
+    await _log_access(db, link, domain, target, action, ip, country, ua_string, platform, referer)
 
-        if not target:
-            if action in ("denied", "blocked"):
-                raise PermissionDeniedError("访问被拒绝")
-            raise NotFoundError("目标URL")
+    if not target:
+        if action in ("denied", "blocked"):
+            raise PermissionDeniedError("访问被拒绝")
+        raise NotFoundError("目标URL")
 
-        return Response(status_code=302, headers={"Location": target.url})
+    return Response(status_code=302, headers={"Location": target.url})

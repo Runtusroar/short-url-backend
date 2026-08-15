@@ -1,7 +1,3 @@
-import uuid
-
-import pytest
-
 from app.services.short_code import generate_short_code, validate_custom_alias
 
 

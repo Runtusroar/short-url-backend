@@ -1,9 +1,5 @@
 """End-to-end API integration tests."""
 
-import uuid
-
-import pytest
-
 from httpx import AsyncClient
 
 
@@ -62,7 +58,7 @@ async def test_login_wrong_password(client):
         data={"username": "admin", "password": "wrong"},
     )
     assert resp.status_code == 401
-    assert resp.json()["code"] == "HTTP_401"
+    assert resp.json()["code"] == "UNAUTHORIZED"
 
 
 async def test_me(client, admin_token):
@@ -196,7 +192,7 @@ async def test_admin_user_crud(client, admin_token):
     resp = await client.delete(f"/api/admin/users/{user['id']}", headers=_auth(admin_token))
     assert resp.status_code == 200
 
-    resp = await client.get(f"/api/admin/users", headers=_auth(admin_token))
+    resp = await client.get("/api/admin/users", headers=_auth(admin_token))
     assert not any(u["username"] == "newop2" for u in resp.json())
 
 

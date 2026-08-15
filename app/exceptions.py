@@ -44,6 +44,15 @@ class PermissionDeniedError(APIError):
         )
 
 
+class UnauthorizedError(APIError):
+    def __init__(self, message: str = "未授权"):
+        super().__init__(
+            code="UNAUTHORIZED",
+            message=message,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+
 def _format_validation_errors(errors: list[dict]) -> str:
     """Extract a readable Chinese message from Pydantic validation errors."""
     if not errors:

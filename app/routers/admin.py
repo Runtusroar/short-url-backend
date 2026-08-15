@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_password_hash, require_admin
 from app.database import get_db
-from app.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.exceptions import ConflictError, NotFoundError
 from app.models import Domain, User, UserDomain
 from app.schemas import UserCreate, UserResponse
 

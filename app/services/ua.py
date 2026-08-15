@@ -16,12 +16,3 @@ def get_platform(ua_string: str | None) -> str | None:
     return "other"
 
 
-def parse_ua(ua_string: str | None) -> dict:
-    if not ua_string:
-        return {"platform": None, "browser": None, "os": None}
-    ua = parse(ua_string)
-    return {
-        "platform": get_platform(ua_string),
-        "browser": ua.browser.family,
-        "os": ua.os.family,
-    }

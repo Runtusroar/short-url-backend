@@ -73,6 +73,29 @@ async def _get_short_link(db: AsyncSession, link_id: UUID, user: User) -> ShortL
     return link
 
 
+async def _get_managed_link(
+    db: AsyncSession,
+    link_id: UUID,
+    current_user: User,
+    current_domain: Domain,
+) -> ShortLink:
+    """Fetch a short link and verify it belongs to the current domain (non-admins)."""
+    link = await _get_short_link(db, link_id, current_user)
+    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
+        raise PermissionDeniedError("短链不属于当前域名")
+    return link
+
+
+async def _check_managed_link(
+    db: AsyncSession,
+    link_id: UUID,
+    current_user: User,
+    current_domain: Domain,
+) -> None:
+    """Verify the user can manage the short link in the current domain."""
+    await _get_managed_link(db, link_id, current_user, current_domain)
+
+
 @router.get("", response_model=list[ShortLinkResponse])
 async def list_short_links(
     domain_id: UUID | None = Query(None),
@@ -169,9 +192,7 @@ async def update_short_link(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    link = await _get_managed_link(db, link_id, current_user, current_domain)
     if payload.description is not None:
         link.description = payload.description
     if payload.is_active is not None:
@@ -188,9 +209,7 @@ async def delete_short_link(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    link = await _get_managed_link(db, link_id, current_user, current_domain)
     await db.delete(link)
     await db.commit()
     return {"detail": "Deleted"}
@@ -207,9 +226,7 @@ async def add_target_url(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    link = await _get_managed_link(db, link_id, current_user, current_domain)
     url = TargetUrl(short_link_id=link.id, **payload.model_dump())
     db.add(url)
     await db.commit()
@@ -226,9 +243,7 @@ async def update_target_url(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    await _check_managed_link(db, link_id, current_user, current_domain)
     result = await db.execute(select(TargetUrl).where(TargetUrl.id == url_id, TargetUrl.short_link_id == link_id))
     url = result.scalar_one_or_none()
     if not url:
@@ -248,9 +263,7 @@ async def delete_target_url(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    await _check_managed_link(db, link_id, current_user, current_domain)
     result = await db.execute(select(TargetUrl).where(TargetUrl.id == url_id, TargetUrl.short_link_id == link_id))
     url = result.scalar_one_or_none()
     if not url:
@@ -271,9 +284,7 @@ async def add_access_rule(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    link = await _get_managed_link(db, link_id, current_user, current_domain)
     rule = AccessRule(short_link_id=link.id, **payload.model_dump())
     db.add(rule)
     await db.commit()
@@ -290,9 +301,7 @@ async def update_access_rule(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    await _check_managed_link(db, link_id, current_user, current_domain)
     result = await db.execute(
         select(AccessRule).where(AccessRule.id == rule_id, AccessRule.short_link_id == link_id)
     )
@@ -314,9 +323,7 @@ async def delete_access_rule(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    await _check_managed_link(db, link_id, current_user, current_domain)
     result = await db.execute(
         select(AccessRule).where(AccessRule.id == rule_id, AccessRule.short_link_id == link_id)
     )
@@ -339,9 +346,7 @@ async def grant_permission(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    link = await _get_managed_link(db, link_id, current_user, current_domain)
 
     user_result = await db.execute(select(User).where(User.id == payload.user_id, User.role == "client"))
     user = user_result.scalar_one_or_none()
@@ -371,9 +376,7 @@ async def revoke_permission(
     current_user: User = Depends(require_staff),
     current_domain: Domain = Depends(require_domain_access),
 ):
-    link = await _get_short_link(db, link_id, current_user)
-    if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise PermissionDeniedError("短链不属于当前域名")
+    await _check_managed_link(db, link_id, current_user, current_domain)
     result = await db.execute(
         select(ShortLinkPermission).where(
             ShortLinkPermission.short_link_id == link_id,

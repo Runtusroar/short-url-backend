@@ -54,13 +54,3 @@ async def require_domain_access(
     return current_domain
 
 
-async def require_domain_staff(
-    current_user: User = Depends(get_current_user),
-    current_domain: Domain = Depends(get_current_domain),
-    db: AsyncSession = Depends(get_db),
-):
-    if current_user.role not in ("admin", "operator"):
-        raise PermissionDeniedError()
-    if not await _has_domain_access(current_user, current_domain.id, db):
-        raise PermissionDeniedError("无权访问该域名")
-    return current_domain
