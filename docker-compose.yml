@@ -37,7 +37,7 @@ services:
     environment:
       GEOIPUPDATE_ACCOUNT_ID: ${GEOIPUPDATE_ACCOUNT_ID}
       GEOIPUPDATE_LICENSE_KEY: ${GEOIPUPDATE_LICENSE_KEY}
-      GEOIPUPDATE_EDITION_IDS: GeoLite2-City
+      GEOIPUPDATE_EDITION_IDS: GeoLite2-Country
       GEOIPUPDATE_FREQUENCY: 24
     volumes:
       - geoipdata:/usr/share/GeoIP
@@ -49,7 +49,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://shorturl:shorturl@db:5432/shorturl}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SECRET_KEY: ${SECRET_KEY}
-      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/usr/share/GeoIP/GeoLite2-City.mmdb}
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/usr/share/GeoIP/GeoLite2-Country.mmdb}
     volumes:
       - geoipdata:/usr/share/GeoIP:ro
     depends_on:
