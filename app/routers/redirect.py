@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.domains import _get_host
+from app.exceptions import NotFoundError, PermissionDeniedError
 from app.models import AccessLog, Domain, IpBlacklist, ShortLink, TargetUrl
 from app.services.geoip import get_country
 from app.services.redirect import get_redirect_target
@@ -70,7 +71,7 @@ async def _resolve_domain(db: AsyncSession, request: Request) -> Domain:
     domain = result.scalar_one_or_none()
     if domain and domain.is_active:
         return domain
-    raise HTTPException(status_code=404, detail="Domain not found")
+    raise NotFoundError("域名")
 
 
 @router.api_route("/{short_code}", methods=["GET", "HEAD"])
@@ -86,7 +87,7 @@ async def redirect(short_code: str, request: Request):
         )
         link = result.scalar_one_or_none()
         if not link:
-            raise HTTPException(status_code=404, detail="Short link not found")
+            raise NotFoundError("短链")
 
         ip = _get_client_ip(request)
         is_blacklisted = await _is_blacklisted(db, ip)
@@ -101,7 +102,7 @@ async def redirect(short_code: str, request: Request):
 
         if not target:
             if action in ("denied", "blocked"):
-                raise HTTPException(status_code=403, detail="Access denied")
-            raise HTTPException(status_code=404, detail="No target URL configured")
+                raise PermissionDeniedError("访问被拒绝")
+            raise NotFoundError("目标URL")
 
         return Response(status_code=302, headers={"Location": target.url})

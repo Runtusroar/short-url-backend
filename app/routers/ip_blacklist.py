@@ -1,12 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_staff
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.exceptions import ConflictError, NotFoundError
 from app.models import IpBlacklist, User
 from app.schemas import IpBlacklistCreate, IpBlacklistResponse
 
@@ -28,14 +29,14 @@ async def add_to_blacklist(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_staff),
 ):
+    existing = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == payload.ip))
+    if existing.scalar_one_or_none():
+        raise ConflictError("该 IP 已在黑名单中")
+
     entry = IpBlacklist(ip=payload.ip, reason=payload.reason, created_by=current_user.id)
     db.add(entry)
-    try:
-        await db.commit()
-        await db.refresh(entry)
-    except Exception as exc:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail="IP already in blacklist") from exc
+    await db.commit()
+    await db.refresh(entry)
     return entry
 
 
@@ -48,7 +49,7 @@ async def remove_from_blacklist(
     result = await db.execute(select(IpBlacklist).where(IpBlacklist.id == entry_id))
     entry = result.scalar_one_or_none()
     if not entry:
-        raise HTTPException(status_code=404, detail="Entry not found")
+        raise NotFoundError("黑名单记录")
     await db.delete(entry)
     await db.commit()
     return {"detail": "Removed"}

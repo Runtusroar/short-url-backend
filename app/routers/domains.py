@@ -1,13 +1,14 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_admin
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Domain, User
+from app.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.models import Domain, User, UserDomain
 from app.schemas import DomainCreate, DomainResponse, DomainUpdate
 
 router = APIRouter(prefix="/api/domains", tags=["domains"])
@@ -21,9 +22,6 @@ async def list_domains(
     if current_user.role == "admin":
         result = await db.execute(select(Domain).order_by(Domain.created_at.desc()))
     else:
-        from sqlalchemy import distinct
-        from app.models import UserDomain
-
         result = await db.execute(
             select(Domain)
             .join(UserDomain, UserDomain.domain_id == Domain.id)
@@ -41,7 +39,11 @@ async def create_domain(
 ):
     existing = await db.execute(select(Domain).where(Domain.name == payload.name))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Domain already exists")
+        raise ConflictError("域名已存在")
+
+    # If setting as default, clear other defaults
+    if payload.is_default:
+        await db.execute(Domain.__table__.update().values(is_default=False))
 
     domain = Domain(**payload.model_dump())
     db.add(domain)
@@ -59,7 +61,7 @@ async def get_domain(
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = result.scalar_one_or_none()
     if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
+        raise NotFoundError("域名")
     return domain
 
 
@@ -73,7 +75,15 @@ async def update_domain(
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = result.scalar_one_or_none()
     if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
+        raise NotFoundError("域名")
+
+    if payload.name is not None:
+        existing = await db.execute(select(Domain).where(Domain.name == payload.name, Domain.id != domain_id))
+        if existing.scalar_one_or_none():
+            raise ConflictError("域名已存在")
+
+    if payload.is_default:
+        await db.execute(Domain.__table__.update().values(is_default=False))
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(domain, field, value)
@@ -92,7 +102,7 @@ async def delete_domain(
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = result.scalar_one_or_none()
     if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
+        raise NotFoundError("域名")
     await db.delete(domain)
     await db.commit()
     return {"detail": "Deleted"}

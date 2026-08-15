@@ -7,6 +7,7 @@ from fastapi_limiter import FastAPILimiter
 
 from app.auth import decode_token
 from app.config import settings
+from app.exceptions import register_exception_handlers
 from app.rate_limit import rate_limit
 from app.routers import admin, auth, domains, ip_blacklist, logs, redirect, short_links
 
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Short URL Service", lifespan=lifespan)
+register_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +8,7 @@ from app.auth import require_staff
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.domains import require_domain_access
+from app.exceptions import APIError, ConflictError, NotFoundError, PermissionDeniedError
 from app.models import AccessRule, Domain, ShortLink, ShortLinkPermission, TargetUrl, User, UserDomain
 from app.schemas import (
     AccessRuleCreate,
@@ -39,7 +40,7 @@ async def _resolve_effective_domain(
         result = await db.execute(select(Domain).where(Domain.id == domain_id, Domain.is_active == True))
         domain = result.scalar_one_or_none()
         if not domain:
-            raise HTTPException(status_code=404, detail="Domain not found")
+            raise NotFoundError("域名")
         return domain
     return current_domain
 
@@ -66,9 +67,9 @@ async def _get_short_link(db: AsyncSession, link_id: UUID, user: User) -> ShortL
     result = await db.execute(select(ShortLink).where(ShortLink.id == link_id))
     link = result.scalar_one_or_none()
     if not link:
-        raise HTTPException(status_code=404, detail="Short link not found")
+        raise NotFoundError("短链")
     if not await _can_manage_link(user, link):
-        raise HTTPException(status_code=403, detail="Permission denied")
+        raise PermissionDeniedError()
     return link
 
 
@@ -105,17 +106,17 @@ async def create_short_link(
     domain = await db.execute(select(Domain).where(Domain.id == payload.domain_id))
     domain = domain.scalar_one_or_none()
     if not domain:
-        raise HTTPException(status_code=400, detail="Domain not found")
+        raise NotFoundError("域名")
     if not domain.is_active:
-        raise HTTPException(status_code=400, detail="Domain is inactive")
+        raise APIError(code="DOMAIN_INACTIVE", message="域名已停用", status_code=400)
 
     if not await _has_domain(current_user, payload.domain_id, db):
-        raise HTTPException(status_code=403, detail="No access to this domain")
+        raise PermissionDeniedError("无权访问该域名")
 
     try:
         short_code = await create_unique_short_code(db, payload.domain_id, payload.custom_alias)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise APIError(code="INVALID_SHORT_CODE", message=str(exc), status_code=400) from exc
 
     link = ShortLink(
         domain_id=payload.domain_id,
@@ -140,12 +141,12 @@ async def get_short_link(
     result = await db.execute(select(ShortLink).where(ShortLink.id == link_id))
     link = result.scalar_one_or_none()
     if not link:
-        raise HTTPException(status_code=404, detail="Short link not found")
+        raise NotFoundError("短链")
 
     # client must have explicit permission and domain access
     if current_user.role == "client":
         if str(link.domain_id) != str(current_domain.id):
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise PermissionDeniedError()
         perm = await db.execute(
             select(ShortLinkPermission).where(
                 ShortLinkPermission.short_link_id == link_id,
@@ -153,9 +154,9 @@ async def get_short_link(
             )
         )
         if not perm.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise PermissionDeniedError()
     elif not await _can_manage_link(current_user, link):
-        raise HTTPException(status_code=403, detail="Permission denied")
+        raise PermissionDeniedError()
 
     return link
 
@@ -170,7 +171,7 @@ async def update_short_link(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     if payload.description is not None:
         link.description = payload.description
     if payload.is_active is not None:
@@ -189,7 +190,7 @@ async def delete_short_link(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     await db.delete(link)
     await db.commit()
     return {"detail": "Deleted"}
@@ -208,7 +209,7 @@ async def add_target_url(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     url = TargetUrl(short_link_id=link.id, **payload.model_dump())
     db.add(url)
     await db.commit()
@@ -227,11 +228,11 @@ async def update_target_url(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     result = await db.execute(select(TargetUrl).where(TargetUrl.id == url_id, TargetUrl.short_link_id == link_id))
     url = result.scalar_one_or_none()
     if not url:
-        raise HTTPException(status_code=404, detail="Target URL not found")
+        raise NotFoundError("目标URL")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(url, field, value)
     await db.commit()
@@ -249,11 +250,11 @@ async def delete_target_url(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     result = await db.execute(select(TargetUrl).where(TargetUrl.id == url_id, TargetUrl.short_link_id == link_id))
     url = result.scalar_one_or_none()
     if not url:
-        raise HTTPException(status_code=404, detail="Target URL not found")
+        raise NotFoundError("目标URL")
     await db.delete(url)
     await db.commit()
     return {"detail": "Deleted"}
@@ -272,7 +273,7 @@ async def add_access_rule(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     rule = AccessRule(short_link_id=link.id, **payload.model_dump())
     db.add(rule)
     await db.commit()
@@ -291,13 +292,13 @@ async def update_access_rule(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     result = await db.execute(
         select(AccessRule).where(AccessRule.id == rule_id, AccessRule.short_link_id == link_id)
     )
     rule = result.scalar_one_or_none()
     if not rule:
-        raise HTTPException(status_code=404, detail="Access rule not found")
+        raise NotFoundError("访问规则")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
     await db.commit()
@@ -315,13 +316,13 @@ async def delete_access_rule(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     result = await db.execute(
         select(AccessRule).where(AccessRule.id == rule_id, AccessRule.short_link_id == link_id)
     )
     rule = result.scalar_one_or_none()
     if not rule:
-        raise HTTPException(status_code=404, detail="Access rule not found")
+        raise NotFoundError("访问规则")
     await db.delete(rule)
     await db.commit()
     return {"detail": "Deleted"}
@@ -340,16 +341,16 @@ async def grant_permission(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
 
     user_result = await db.execute(select(User).where(User.id == payload.user_id, User.role == "client"))
     user = user_result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=400, detail="Target user not found or not a client")
+        raise NotFoundError("目标用户（需为 client 角色）")
 
     # client user must have access to current domain
     if not await _has_domain(user, current_domain.id, db):
-        raise HTTPException(status_code=400, detail="Client user has no access to this domain")
+        raise PermissionDeniedError("该 client 用户无权访问此域名")
 
     perm = ShortLinkPermission(short_link_id=link.id, user_id=user.id)
     db.add(perm)
@@ -358,7 +359,7 @@ async def grant_permission(
         await db.refresh(perm)
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status_code=400, detail="Permission already granted") from exc
+        raise ConflictError("该用户已被授权查看此短链") from exc
     return perm
 
 
@@ -372,7 +373,7 @@ async def revoke_permission(
 ):
     link = await _get_short_link(db, link_id, current_user)
     if current_user.role != "admin" and str(link.domain_id) != str(current_domain.id):
-        raise HTTPException(status_code=403, detail="Domain mismatch")
+        raise PermissionDeniedError("短链不属于当前域名")
     result = await db.execute(
         select(ShortLinkPermission).where(
             ShortLinkPermission.short_link_id == link_id,
@@ -381,7 +382,7 @@ async def revoke_permission(
     )
     perm = result.scalar_one_or_none()
     if not perm:
-        raise HTTPException(status_code=404, detail="Permission not found")
+        raise NotFoundError("授权记录")
     await db.delete(perm)
     await db.commit()
     return {"detail": "Revoked"}

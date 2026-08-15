@@ -1,9 +1,10 @@
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
+from app.exceptions import NotFoundError, PermissionDeniedError
 from app.models import Domain, User, UserDomain
 
 
@@ -28,7 +29,7 @@ async def get_current_domain(
     domain = result.scalar_one_or_none()
     if domain:
         return domain
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found")
+    raise NotFoundError("域名")
 
 
 async def _has_domain_access(user: User, domain_id, db: AsyncSession) -> bool:
@@ -49,7 +50,7 @@ async def require_domain_access(
     db: AsyncSession = Depends(get_db),
 ):
     if not await _has_domain_access(current_user, current_domain.id, db):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this domain")
+        raise PermissionDeniedError("无权访问该域名")
     return current_domain
 
 
@@ -59,7 +60,7 @@ async def require_domain_staff(
     db: AsyncSession = Depends(get_db),
 ):
     if current_user.role not in ("admin", "operator"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise PermissionDeniedError()
     if not await _has_domain_access(current_user, current_domain.id, db):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this domain")
+        raise PermissionDeniedError("无权访问该域名")
     return current_domain

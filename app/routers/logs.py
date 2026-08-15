@@ -1,13 +1,14 @@
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.domains import require_domain_access
+from app.exceptions import NotFoundError, PermissionDeniedError
 from app.models import AccessLog, Domain, ShortLink, ShortLinkPermission, User
 from app.schemas import AccessLogResponse, DailyStatsResponse
 
@@ -24,7 +25,7 @@ async def _resolve_effective_domain(
         result = await db.execute(select(Domain).where(Domain.id == domain_id, Domain.is_active == True))
         domain = result.scalar_one_or_none()
         if not domain:
-            raise HTTPException(status_code=404, detail="Domain not found")
+            raise NotFoundError("域名")
         return domain
     return current_domain
 
@@ -66,7 +67,7 @@ async def list_logs(
 
     if short_link_id:
         if not await _can_view_link(db, current_user, short_link_id):
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise PermissionDeniedError()
         query = query.where(AccessLog.short_link_id == short_link_id)
 
     if date_from:
