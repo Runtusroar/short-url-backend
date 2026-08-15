@@ -111,11 +111,15 @@ class ShortLinkCreate(BaseModel):
     domain_id: UUID
     custom_alias: str | None = Field(default=None, pattern="^[a-zA-Z0-9_-]{3,32}$")
     description: str | None = None
+    default_action: str = Field(default="allow", pattern="^(allow|deny)$")
+    normal_url: str | None = None
+    blocked_url: str | None = None
 
 
 class ShortLinkUpdate(BaseModel):
     description: str | None = None
     is_active: bool | None = None
+    default_action: str | None = Field(default=None, pattern="^(allow|deny)$")
 
 
 class ShortLinkResponse(BaseModel):
@@ -127,6 +131,7 @@ class ShortLinkResponse(BaseModel):
     owner_id: UUID
     domain_id: UUID
     is_active: bool
+    default_action: str
     created_at: datetime
     updated_at: datetime
 

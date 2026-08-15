@@ -1,7 +1,9 @@
+from datetime import date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_staff
@@ -9,7 +11,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.domains import require_domain_access
 from app.exceptions import APIError, ConflictError, NotFoundError, PermissionDeniedError
-from app.models import AccessRule, Domain, ShortLink, ShortLinkPermission, TargetUrl, User, UserDomain
+from app.models import AccessLog, AccessRule, Domain, ShortLink, ShortLinkPermission, TargetUrl, User, UserDomain
 from app.schemas import (
     AccessRuleCreate,
     AccessRuleResponse,
@@ -146,9 +148,29 @@ async def create_short_link(
         short_code=short_code,
         is_custom_alias=bool(payload.custom_alias),
         description=payload.description,
+        default_action=payload.default_action,
         owner_id=current_user.id,
     )
     db.add(link)
+    await db.flush()
+
+    if payload.normal_url:
+        db.add(TargetUrl(
+            short_link_id=link.id,
+            url=payload.normal_url,
+            url_type="allowed",
+            weight=1,
+            is_active=True,
+        ))
+    if payload.blocked_url:
+        db.add(TargetUrl(
+            short_link_id=link.id,
+            url=payload.blocked_url,
+            url_type="denied",
+            weight=1,
+            is_active=True,
+        ))
+
     await db.commit()
     await db.refresh(link)
     return link
@@ -197,6 +219,8 @@ async def update_short_link(
         link.description = payload.description
     if payload.is_active is not None:
         link.is_active = payload.is_active
+    if payload.default_action is not None:
+        link.default_action = payload.default_action
     await db.commit()
     await db.refresh(link)
     return link
@@ -389,3 +413,56 @@ async def revoke_permission(
     await db.delete(perm)
     await db.commit()
     return {"detail": "Revoked"}
+
+
+@router.get("/daily-stats")
+async def daily_stats_for_links(
+    stats_date: date | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_staff),
+    current_domain: Domain = Depends(require_domain_access),
+):
+    """Return today's visit count for each short link in the current domain."""
+    if stats_date is None:
+        stats_date = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+    base_query = select(ShortLink).where(ShortLink.domain_id == current_domain.id)
+    if current_user.role != "admin":
+        base_query = base_query.where(ShortLink.owner_id == current_user.id)
+
+    result = await db.execute(base_query.order_by(ShortLink.created_at.desc()))
+    links = result.scalars().all()
+    link_ids = [link.id for link in links]
+
+    stats = {}
+    if link_ids:
+        result = await db.execute(
+            select(
+                AccessLog.short_link_id,
+                func.count().label("total"),
+                func.count(distinct(AccessLog.ip)).label("unique_ips"),
+            )
+            .where(
+                AccessLog.short_link_id.in_(link_ids),
+                AccessLog.domain_id == current_domain.id,
+                AccessLog.accessed_at_plus8 == stats_date,
+            )
+            .group_by(AccessLog.short_link_id)
+        )
+        stats = {
+            row.short_link_id: {
+                "total": row.total,
+                "unique_ips": row.unique_ips,
+            }
+            for row in result.all()
+        }
+
+    return [
+        {
+            "short_link_id": str(link.id),
+            "short_code": link.short_code,
+            "total": stats.get(link.id, {}).get("total", 0),
+            "unique_ips": stats.get(link.id, {}).get("unique_ips", 0),
+        }
+        for link in links
+    ]

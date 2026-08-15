@@ -9,6 +9,11 @@ class FakeTargetUrl:
         self.is_active = is_active
 
 
+class FakeShortLink:
+    def __init__(self, default_action="allow"):
+        self.default_action = default_action
+
+
 def _rule(**kwargs):
     defaults = {"is_active": True}
     defaults.update(kwargs)
@@ -30,11 +35,15 @@ def test_rule_matches_platform():
 def test_evaluate_rules_priority():
     rule1 = _rule(action="deny", priority=0, countries=["CN"])
     rule2 = _rule(action="allow", priority=1, countries=["CN"])
-    assert evaluate_rules([rule1, rule2], "CN", "pc", None) == "deny"
+    assert evaluate_rules([rule1, rule2], FakeShortLink(), "CN", "pc", None) == "deny"
 
 
 def test_evaluate_rules_default_allow():
-    assert evaluate_rules([], "CN", "pc", None) == "allow"
+    assert evaluate_rules([], FakeShortLink("allow"), "CN", "pc", None) == "allow"
+
+
+def test_evaluate_rules_default_deny():
+    assert evaluate_rules([], FakeShortLink("deny"), "CN", "pc", None) == "deny"
 
 
 def test_weighted_random_choice_respects_weight():

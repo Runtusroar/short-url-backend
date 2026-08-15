@@ -107,7 +107,9 @@ def test_evaluate_rules_priority():
     allow.countries = allow.ua_platforms = None
     allow.referer_pattern = None
 
-    assert evaluate_rules([allow, deny], None, None, None) == "deny"
+    short_link = MagicMock()
+    short_link.default_action = "allow"
+    assert evaluate_rules([allow, deny], short_link, None, None, None) == "deny"
 
 
 def test_evaluate_rules_inactive_ignored():
@@ -117,7 +119,9 @@ def test_evaluate_rules_inactive_ignored():
     inactive.action = "deny"
     inactive.countries = inactive.ua_platforms = inactive.referer_pattern = None
 
-    assert evaluate_rules([inactive], None, None, None) == "allow"
+    short_link = MagicMock()
+    short_link.default_action = "allow"
+    assert evaluate_rules([inactive], short_link, None, None, None) == "allow"
 
 
 def test_weighted_random_choice_zero_total_weight():

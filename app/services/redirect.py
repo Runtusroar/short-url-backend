@@ -32,13 +32,19 @@ def rule_matches(rule: AccessRule, country: str | None, platform: str | None, re
     )
 
 
-def evaluate_rules(rules: list[AccessRule], country: str | None, platform: str | None, referer: str | None) -> str:
+def evaluate_rules(
+    rules: list[AccessRule],
+    short_link: ShortLink,
+    country: str | None,
+    platform: str | None,
+    referer: str | None,
+) -> str:
     active_rules = [r for r in rules if r.is_active]
     active_rules.sort(key=lambda r: r.priority)
     for rule in active_rules:
         if rule_matches(rule, country, platform, referer):
             return rule.action
-    return "allow"
+    return short_link.default_action
 
 
 def weighted_random_choice(urls: list[TargetUrl]) -> TargetUrl | None:
@@ -65,7 +71,7 @@ async def get_redirect_target(
     else:
         result = await db.execute(select(AccessRule).where(AccessRule.short_link_id == short_link.id))
         rules = result.scalars().all()
-        action = evaluate_rules(rules, country, platform, referer)
+        action = evaluate_rules(rules, short_link, country, platform, referer)
         if action == "allow":
             action = "allowed"
         elif action == "deny":

@@ -68,6 +68,7 @@ class ShortLink(Base):
     description = Column(Text)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    default_action = Column(String(16), default="allow", nullable=False)
     created_at = Column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 
