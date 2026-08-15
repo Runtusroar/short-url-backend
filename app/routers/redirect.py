@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.client_ip import get_client_ip
 from app.database import get_db
 from app.domains import _get_host
 from app.exceptions import NotFoundError, PermissionDeniedError
@@ -14,19 +15,6 @@ from app.services.redirect import get_redirect_target
 from app.services.ua import get_platform
 
 router = APIRouter(tags=["redirect"])
-
-
-def _get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _is_proxy(request: Request) -> bool:
-    """Detect proxy/VPN by common proxy headers."""
-    proxy_headers = ["x-forwarded-for", "x-real-ip", "via", "forwarded"]
-    return any(request.headers.get(header) for header in proxy_headers)
 
 
 async def _is_blacklisted(db: AsyncSession, ip: str) -> bool:
@@ -98,13 +86,13 @@ async def redirect(
     if not link:
         raise NotFoundError("短链")
 
-    ip = _get_client_ip(request)
+    ip = get_client_ip(request)
     is_blacklisted = await _is_blacklisted(db, ip)
     country = get_country(ip)
     ua_string = request.headers.get("user-agent")
     platform = get_platform(ua_string)
     referer = request.headers.get("referer")
-    is_proxy = _is_proxy(request)
+    is_proxy = platform == "bot"
 
     action, target = await get_redirect_target(db, link, country, platform, referer, is_blacklisted, is_proxy)
 

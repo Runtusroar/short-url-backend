@@ -30,6 +30,17 @@ def test_ua_platform_variants():
     assert get_platform(None) is None
 
 
+def test_bot_detection_precedes_pc_detection(monkeypatch):
+    class BotThatLooksLikePc:
+        is_bot = True
+        is_mobile = False
+        is_tablet = False
+        is_pc = True
+
+    monkeypatch.setattr("app.services.ua.parse", lambda value: BotThatLooksLikePc())
+    assert get_platform("spoofed-bot") == "bot"
+
+
 # -----------------------------------------------------------------------------
 # GeoIP
 # -----------------------------------------------------------------------------
@@ -144,5 +155,4 @@ def test_weighted_random_choice_zero_total_weight():
     url.weight = 0
     result = weighted_random_choice([url])
     assert result is url
-
 

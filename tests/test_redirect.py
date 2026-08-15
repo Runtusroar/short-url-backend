@@ -42,6 +42,11 @@ def test_rule_matches_bot_denied():
     assert rule_matches(rule, "CN", "bot", None, False) is False
 
 
+def test_bot_assumed_proxy_requires_proxy_permission():
+    rule = _rule(countries=[], ua_platforms=[], allow_bot=True, allow_proxy=False)
+    assert not rule_matches(rule, None, "bot", None, is_proxy=True)
+
+
 def test_rule_matches_proxy_allowed():
     rule = _rule(countries=[], ua_platforms=[], allow_proxy=True)
     assert rule_matches(rule, "CN", "pc", None, True) is True

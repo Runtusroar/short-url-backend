@@ -7,16 +7,10 @@ from fastapi_limiter import FastAPILimiter
 
 from app.auth import decode_token
 from app.config import settings
+from app.core.client_ip import get_client_ip
 from app.exceptions import register_exception_handlers
 from app.rate_limit import rate_limit
 from app.routers import admin, auth, domains, ip_blacklist, logs, redirect, short_links
-
-
-def _default_identifier(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
 
 
 async def _user_identifier(request: Request) -> str:
@@ -29,7 +23,11 @@ async def _user_identifier(request: Request) -> str:
                 return f"user:{user_id}"
         except Exception:
             pass
-    return _default_identifier(request)
+    return get_client_ip(request)
+
+
+async def _ip_identifier(request: Request) -> str:
+    return get_client_ip(request)
 
 
 @asynccontextmanager
@@ -55,7 +53,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ip_rate_limit = rate_limit(times=60, seconds=60)
+ip_rate_limit = rate_limit(times=60, seconds=60, identifier=_ip_identifier)
 user_rate_limit = rate_limit(times=120, seconds=60, identifier=_user_identifier)
 
 app.include_router(auth.router)
