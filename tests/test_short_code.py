@@ -1,4 +1,4 @@
-from app.services.short_code import generate_short_code, validate_custom_alias
+from app.features.short_links.short_code import generate_short_code, validate_custom_alias
 
 
 def test_generate_short_code_length():

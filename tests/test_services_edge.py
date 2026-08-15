@@ -12,7 +12,7 @@ from app.services.redirect import (
     rule_matches,
     weighted_random_choice,
 )
-from app.services.short_code import validate_custom_alias
+from app.features.short_links.short_code import validate_custom_alias
 from app.services.ua import get_platform
 
 
@@ -155,4 +155,3 @@ def test_weighted_random_choice_zero_total_weight():
     url.weight = 0
     result = weighted_random_choice([url])
     assert result is url
-

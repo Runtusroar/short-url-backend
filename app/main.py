@@ -17,8 +17,9 @@ from app.core.security import decode_token
 from app.features.auth.router import router as auth_router
 from app.features.blacklist.router import router as blacklist_router
 from app.features.domains.router import router as domains_router
+from app.features.short_links.router import router as short_links_router
 from app.features.users.router import router as users_router
-from app.routers import logs, redirect, short_links
+from app.routers import logs, redirect
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ ip_rate_limit = rate_limit(times=60, seconds=60, identifier=_ip_identifier)
 user_rate_limit = rate_limit(times=120, seconds=60, identifier=_user_identifier)
 
 app.include_router(auth_router)
-app.include_router(short_links.router, dependencies=[user_rate_limit])
+app.include_router(short_links_router, dependencies=[user_rate_limit])
 app.include_router(logs.router, dependencies=[user_rate_limit])
 app.include_router(users_router, dependencies=[user_rate_limit])
 app.include_router(blacklist_router, dependencies=[user_rate_limit])
