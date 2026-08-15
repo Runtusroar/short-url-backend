@@ -122,6 +122,38 @@ def _set_server_defaults() -> None:
         )
 
 
+def _reject_unrepresentable_downgrade_data() -> None:
+    if _count(
+        """
+        SELECT count(*) FROM access_rules
+        WHERE client_requirement = 'bot' OR proxy_requirement = 'proxy'
+        """
+    ):
+        raise RuntimeError("access rule downgrade representability invariant violated")
+    if _count(
+        """
+        SELECT count(*) FROM access_rules
+        WHERE CASE
+            WHEN referer_patterns IS NULL
+                 OR jsonb_typeof(referer_patterns) <> 'array' THEN true
+            WHEN EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(referer_patterns) AS pattern(value)
+                WHERE jsonb_typeof(value) <> 'string'
+            ) THEN true
+            ELSE char_length(
+                (
+                    SELECT string_agg(value #>> '{}', ',' ORDER BY ordinal)
+                    FROM jsonb_array_elements(referer_patterns)
+                         WITH ORDINALITY AS pattern(value, ordinal)
+                )
+            ) > 255
+        END
+        """
+    ):
+        raise RuntimeError("referer pattern downgrade invariant")
+
+
 def upgrade() -> None:
     _reject_invalid_legacy_data()
 
@@ -275,20 +307,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    unrepresentable_count = int(
-        op.get_bind()
-        .execute(
-            sa.text(
-                """
-                SELECT count(*) FROM access_rules
-                WHERE client_requirement = 'bot' OR proxy_requirement = 'proxy'
-                """
-            )
-        )
-        .scalar_one()
-    )
-    if unrepresentable_count:
-        raise RuntimeError("access rule downgrade representability invariant violated")
+    _reject_unrepresentable_downgrade_data()
 
     op.add_column(
         "access_rules",

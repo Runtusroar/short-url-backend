@@ -1,5 +1,6 @@
 """Database contract for the access-rule semantics revision."""
 
+import json
 import uuid
 from subprocess import CalledProcessError
 
@@ -345,6 +346,186 @@ def test_access_rule_downgrade_rejects_unrepresentable_bot_or_proxy_rows(
                 )
                 == "bot"
             )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "referer_patterns",
+    [
+        ["x" * 256],
+        ["x" * 128, "y" * 127],
+    ],
+    ids=["single-pattern-over-255", "joined-patterns-over-255"],
+)
+def test_access_rule_downgrade_rejects_referer_patterns_too_long_before_writes(
+    migration_database_url, referer_patterns
+):
+    """A legal Task 3 JSON array must not be silently truncated for 9b."""
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            _, _, link_id = _seed_link(connection, "referer-overflow")
+            rule_id = uuid.uuid4()
+            _seed_rule(
+                connection,
+                rule_id=rule_id,
+                link_id=link_id,
+                priority=0,
+                allow_bot=True,
+                allow_proxy=True,
+            )
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE access_rules SET referer_patterns = CAST(:patterns AS jsonb) "
+                    "WHERE id = :id"
+                ),
+                {"id": rule_id, "patterns": json.dumps(referer_patterns)},
+            )
+
+        with pytest.raises(CalledProcessError) as raised:
+            run_alembic(migration_database_url, "downgrade", BASE_REVISION)
+
+        diagnostic = f"{raised.value.stdout}\n{raised.value.stderr}"
+        assert "referer pattern downgrade invariant" in diagnostic
+        assert referer_patterns[0] not in diagnostic
+        assert "value too long" not in diagnostic
+        assert "psycopg" not in diagnostic
+        assert "sqlalchemy.exc" not in diagnostic
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == REVISION
+            )
+            columns = {
+                column_info["name"]
+                for column_info in inspect(engine).get_columns("access_rules")
+            }
+            assert {"referer_pattern", "allow_bot", "allow_proxy"}.isdisjoint(columns)
+            assert {
+                "name",
+                "client_requirement",
+                "proxy_requirement",
+                "referer_patterns",
+            } <= columns
+            assert (
+                connection.scalar(
+                    text("SELECT referer_patterns FROM access_rules WHERE id = :id"),
+                    {"id": rule_id},
+                )
+                == referer_patterns
+            )
+    finally:
+        engine.dispose()
+
+
+def test_access_rule_downgrade_rejects_non_string_referer_pattern_before_writes(
+    migration_database_url,
+):
+    """The JSON-array check permits `[1]`, but 9b cannot represent it."""
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            _, _, link_id = _seed_link(connection, "referer-non-string")
+            rule_id = uuid.uuid4()
+            _seed_rule(
+                connection,
+                rule_id=rule_id,
+                link_id=link_id,
+                priority=0,
+                allow_bot=True,
+                allow_proxy=True,
+            )
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE access_rules SET referer_patterns = '[1]'::jsonb WHERE id = :id"
+                ),
+                {"id": rule_id},
+            )
+
+        with pytest.raises(CalledProcessError) as raised:
+            run_alembic(migration_database_url, "downgrade", BASE_REVISION)
+
+        diagnostic = f"{raised.value.stdout}\n{raised.value.stderr}"
+        assert "referer pattern downgrade invariant" in diagnostic
+        assert "[1]" not in diagnostic
+        assert "TypeError" not in diagnostic
+        assert "psycopg" not in diagnostic
+        assert "sqlalchemy.exc" not in diagnostic
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == REVISION
+            )
+            columns = {
+                column_info["name"]
+                for column_info in inspect(engine).get_columns("access_rules")
+            }
+            assert {"referer_pattern", "allow_bot", "allow_proxy"}.isdisjoint(columns)
+            assert {
+                "name",
+                "client_requirement",
+                "proxy_requirement",
+                "referer_patterns",
+            } <= columns
+            assert connection.scalar(
+                text("SELECT referer_patterns FROM access_rules WHERE id = :id"),
+                {"id": rule_id},
+            ) == [1]
+    finally:
+        engine.dispose()
+
+
+def test_access_rule_downgrade_preserves_255_character_referer_pattern(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    boundary_pattern = "x" * 255
+    try:
+        with engine.begin() as connection:
+            _, _, link_id = _seed_link(connection, "referer-boundary")
+            rule_id = uuid.uuid4()
+            _seed_rule(
+                connection,
+                rule_id=rule_id,
+                link_id=link_id,
+                priority=0,
+                allow_bot=True,
+                allow_proxy=True,
+            )
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE access_rules SET referer_patterns = CAST(:patterns AS jsonb) "
+                    "WHERE id = :id"
+                ),
+                {"id": rule_id, "patterns": json.dumps([boundary_pattern])},
+            )
+
+        run_alembic(migration_database_url, "downgrade", BASE_REVISION)
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT referer_pattern FROM access_rules WHERE id = :id"),
+                    {"id": rule_id},
+                )
+                == boundary_pattern
+            )
+
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT referer_patterns FROM access_rules WHERE id = :id"),
+                {"id": rule_id},
+            ) == [boundary_pattern]
     finally:
         engine.dispose()
 
