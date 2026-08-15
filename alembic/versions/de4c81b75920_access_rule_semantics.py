@@ -19,6 +19,39 @@ branch_labels = None
 depends_on = None
 
 
+def _count(statement: str) -> int:
+    return int(op.get_bind().execute(sa.text(statement)).scalar_one())
+
+
+def _reject_invalid_legacy_data() -> None:
+    """Reject values that cannot enter the Task 3 contract before any writes."""
+    if _count(
+        "SELECT count(*) FROM access_rules WHERE action NOT IN ('allow', 'deny')"
+    ):
+        raise RuntimeError("access rule action invariant violated")
+    if _count(
+        """
+        SELECT count(*) FROM access_rules
+        WHERE countries IS NULL OR jsonb_typeof(countries) <> 'array'
+        """
+    ):
+        raise RuntimeError("access rule countries invariant violated")
+    if _count(
+        """
+        SELECT count(*) FROM access_rules
+        WHERE ua_platforms IS NULL OR jsonb_typeof(ua_platforms) <> 'array'
+        """
+    ):
+        raise RuntimeError("access rule ua platforms invariant violated")
+    if _count(
+        """
+        SELECT count(*) FROM access_rules
+        WHERE allow_bot IS NULL OR allow_proxy IS NULL
+        """
+    ):
+        raise RuntimeError("access rule requirement source invariant violated")
+
+
 def _normalize_countries(values: object) -> list[str]:
     if not isinstance(values, list):
         return []
@@ -90,6 +123,8 @@ def _set_server_defaults() -> None:
 
 
 def upgrade() -> None:
+    _reject_invalid_legacy_data()
+
     op.add_column(
         "access_rules", sa.Column("name", sa.String(length=128), nullable=True)
     )
@@ -329,3 +364,17 @@ def downgrade() -> None:
     op.drop_column("access_rules", "client_requirement")
     op.drop_column("access_rules", "referer_patterns")
     op.drop_column("access_rules", "name")
+    for column_name, column_type, nullable in (
+        ("priority", sa.Integer(), False),
+        ("countries", postgresql.JSONB(), True),
+        ("ua_platforms", postgresql.JSONB(), True),
+        ("is_active", sa.Boolean(), False),
+    ):
+        op.alter_column(
+            "access_rules",
+            column_name,
+            existing_type=column_type,
+            existing_nullable=not nullable,
+            nullable=nullable,
+            server_default=None,
+        )

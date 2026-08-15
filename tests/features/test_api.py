@@ -890,6 +890,82 @@ async def test_access_rule_duplicate_priority_rolls_back_as_conflict(
     assert follow_up.json()["priority"] == 4
 
 
+async def test_access_rule_update_normalizes_every_rule_field(
+    client, admin_token, default_domain
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    created = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "initial", "action": "allow"},
+    )
+    assert created.status_code == 200
+
+    updated = await client.put(
+        f"/api/short-links/{link['id']}/rules/{created.json()['id']}",
+        headers={**_auth(admin_token), **_host()},
+        json={
+            "name": "  updated rule  ",
+            "countries": ["us", "aq"],
+            "ua_platforms": [" Mobile ", "BOT"],
+            "referer_patterns": [" https://one.example/*, , *social* "],
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "updated rule"
+    assert updated.json()["countries"] == ["US", "AQ"]
+    assert updated.json()["ua_platforms"] == ["mobile", "bot"]
+    assert updated.json()["referer_patterns"] == ["https://one.example/*", "*social*"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "status_code"),
+    [
+        ("name", None, 422),
+        ("countries", None, 422),
+        ("ua_platforms", None, 422),
+        ("referer_patterns", None, 422),
+        ("name", "   ", 422),
+        ("countries", ["ZZ"], 422),
+    ],
+)
+async def test_access_rule_update_rejects_null_or_invalid_normalized_values(
+    client, admin_token, default_domain, field, value, status_code
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    created = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "initial", "action": "allow"},
+    )
+    assert created.status_code == 200
+
+    response = await client.put(
+        f"/api/short-links/{link['id']}/rules/{created.json()['id']}",
+        headers={**_auth(admin_token), **_host()},
+        json={field: value},
+    )
+
+    assert response.status_code == status_code
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+async def test_access_rule_create_rejects_non_iso_country_code(
+    client, admin_token, default_domain
+):
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+
+    response = await client.post(
+        f"/api/short-links/{link['id']}/rules",
+        headers={**_auth(admin_token), **_host()},
+        json={"name": "invalid country", "action": "allow", "countries": ["ZZ"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
 # ---------------------------------------------------------------------------
 # Redirect & logs
 # ---------------------------------------------------------------------------

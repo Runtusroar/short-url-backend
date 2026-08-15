@@ -104,6 +104,8 @@ psycopg==3.3.4
     # via short-url
 psycopg-binary==3.3.4 ; implementation_name != 'pypy'
     # via psycopg
+pycountry==24.6.1
+    # via short-url
 pydantic==2.13.4
     # via
     #   fastapi

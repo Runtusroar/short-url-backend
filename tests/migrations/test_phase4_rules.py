@@ -347,3 +347,147 @@ def test_access_rule_downgrade_rejects_unrepresentable_bot_or_proxy_rows(
             )
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("column", "legacy_json", "invariant"),
+    [
+        ("action", None, "access rule action invariant violated"),
+        ("countries", '{"CN": true}', "access rule countries invariant violated"),
+        ("countries", "null", "access rule countries invariant violated"),
+        ("ua_platforms", "null", "access rule ua platforms invariant violated"),
+    ],
+)
+def test_access_rule_upgrade_rejects_unsafe_legacy_values_before_schema_writes(
+    migration_database_url, column, legacy_json, invariant
+):
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    sentinel = "badaction"
+    try:
+        with engine.begin() as connection:
+            _, _, link_id = _seed_link(
+                connection, f"invalid-{column.replace('_', '-')}"
+            )
+            rule_id = uuid.uuid4()
+            _seed_rule(
+                connection,
+                rule_id=rule_id,
+                link_id=link_id,
+                priority=0,
+                allow_bot=True,
+                allow_proxy=True,
+            )
+            if column == "action":
+                connection.execute(
+                    text("UPDATE access_rules SET action = :value WHERE id = :id"),
+                    {"id": rule_id, "value": sentinel},
+                )
+            else:
+                connection.execute(
+                    text(
+                        f"UPDATE access_rules SET {column} = CAST(:value AS jsonb) WHERE id = :id"
+                    ),
+                    {"id": rule_id, "value": legacy_json},
+                )
+
+        with pytest.raises(CalledProcessError) as raised:
+            run_alembic(migration_database_url, "upgrade", REVISION)
+
+        diagnostic = f"{raised.value.stdout}\n{raised.value.stderr}"
+        assert invariant in diagnostic
+        assert sentinel not in diagnostic
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == BASE_REVISION
+            )
+            columns = {
+                column_info["name"]
+                for column_info in inspect(engine).get_columns("access_rules")
+            }
+            assert {
+                "name",
+                "client_requirement",
+                "proxy_requirement",
+                "referer_patterns",
+            }.isdisjoint(columns)
+            assert connection.scalar(
+                text("SELECT action FROM access_rules WHERE id = :id"), {"id": rule_id}
+            ) == (sentinel if column == "action" else "allow")
+    finally:
+        engine.dispose()
+
+
+def test_access_rule_downgrade_restores_9b_defaults_and_direct_insert_contract(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    try:
+        parent_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("access_rules")
+        }
+        assert "gen_random_uuid" in parent_columns["id"]["default"]
+        assert parent_columns["priority"]["default"] is None
+        assert parent_columns["countries"]["default"] is None
+        assert parent_columns["ua_platforms"]["default"] is None
+        assert parent_columns["is_active"]["default"] is None
+        assert "true" in parent_columns["allow_bot"]["default"]
+        assert "true" in parent_columns["allow_proxy"]["default"]
+        assert {"created_at", "updated_at"}.isdisjoint(parent_columns)
+
+        with engine.begin() as connection:
+            _, _, link_id = _seed_link(connection, "defaults")
+            _seed_rule(
+                connection,
+                rule_id=uuid.uuid4(),
+                link_id=link_id,
+                priority=0,
+                allow_bot=True,
+                allow_proxy=True,
+            )
+
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        run_alembic(migration_database_url, "downgrade", BASE_REVISION)
+
+        restored_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("access_rules")
+        }
+        for column_name in ("id", "priority", "countries", "ua_platforms", "is_active"):
+            assert (
+                restored_columns[column_name]["default"]
+                == parent_columns[column_name]["default"]
+            )
+        assert "true" in restored_columns["allow_bot"]["default"]
+        assert "true" in restored_columns["allow_proxy"]["default"]
+        assert {"created_at", "updated_at"}.isdisjoint(restored_columns)
+
+        with engine.begin() as connection:
+            inserted = (
+                connection.execute(
+                    text(
+                        """
+                    INSERT INTO access_rules
+                        (short_link_id, action, priority, countries, ua_platforms, is_active)
+                    VALUES (:short_link_id, 'allow', 7, '[]'::jsonb, '[]'::jsonb, true)
+                    RETURNING id, allow_bot, allow_proxy, countries, ua_platforms
+                    """
+                    ),
+                    {"short_link_id": link_id},
+                )
+                .mappings()
+                .one()
+            )
+            assert inserted["id"] is not None
+            assert inserted["allow_bot"] is True
+            assert inserted["allow_proxy"] is True
+            assert inserted["countries"] == []
+            assert inserted["ua_platforms"] == []
+
+        run_alembic(migration_database_url, "upgrade", REVISION)
+        assert inspect(engine).get_columns("access_rules")
+    finally:
+        engine.dispose()

@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
+from pycountry import countries as iso_countries
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
@@ -9,6 +10,56 @@ from app.models.enums import AccessAction, ClientRequirement, ProxyRequirement
 
 def _contract_error(message: str) -> PydanticCustomError:
     return PydanticCustomError("unprocessable_entity", message)
+
+
+ISO_3166_ALPHA_2_CODES = frozenset(country.alpha_2 for country in iso_countries)
+
+
+def _normalize_rule_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise _contract_error("name must be 1 to 128 characters")
+    normalized = value.strip()
+    if not normalized:
+        raise _contract_error("name must be 1 to 128 characters")
+    return normalized
+
+
+def _normalize_countries(values: object) -> list[str]:
+    if not isinstance(values, list):
+        raise _contract_error("countries must contain ISO alpha-2 codes")
+    normalized = []
+    for value in values:
+        if not isinstance(value, str):
+            raise _contract_error("countries must contain ISO alpha-2 codes")
+        country = value.strip().upper()
+        if country not in ISO_3166_ALPHA_2_CODES:
+            raise _contract_error("countries must contain ISO alpha-2 codes")
+        normalized.append(country)
+    return normalized
+
+
+def _normalize_platforms(values: object) -> list[str]:
+    if not isinstance(values, list):
+        raise _contract_error("ua_platforms must contain non-empty strings")
+    normalized = []
+    for value in values:
+        if not isinstance(value, str):
+            raise _contract_error("ua_platforms must contain non-empty strings")
+        if not (platform := value.strip()):
+            raise _contract_error("ua_platforms must contain non-empty strings")
+        normalized.append(platform.lower())
+    return normalized
+
+
+def _normalize_referer_patterns(values: object) -> list[str]:
+    if not isinstance(values, list):
+        raise _contract_error("referer_patterns must contain strings")
+    normalized = []
+    for value in values:
+        if not isinstance(value, str):
+            raise _contract_error("referer_patterns must contain strings")
+        normalized.extend(part.strip() for part in value.split(",") if part.strip())
+    return normalized
 
 
 class TargetUrlBase(BaseModel):
@@ -67,43 +118,22 @@ class AccessRuleBase(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_rule_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise _contract_error("name must be 1 to 128 characters")
-        return normalized
+        return _normalize_rule_name(value)
 
     @field_validator("countries")
     @classmethod
     def normalize_countries(cls, values: list[str]) -> list[str]:
-        normalized = []
-        for value in values:
-            if not isinstance(value, str):
-                raise _contract_error("countries must contain ISO alpha-2 codes")
-            country = value.strip().upper()
-            if len(country) != 2 or not country.isalpha():
-                raise _contract_error("countries must contain ISO alpha-2 codes")
-            normalized.append(country)
-        return normalized
+        return _normalize_countries(values)
 
     @field_validator("ua_platforms")
     @classmethod
     def normalize_platforms(cls, values: list[str]) -> list[str]:
-        normalized = []
-        for value in values:
-            if not isinstance(value, str) or not (platform := value.strip()):
-                raise _contract_error("ua_platforms must contain non-empty strings")
-            normalized.append(platform.lower())
-        return normalized
+        return _normalize_platforms(values)
 
     @field_validator("referer_patterns")
     @classmethod
     def normalize_referer_patterns(cls, values: list[str]) -> list[str]:
-        normalized = []
-        for value in values:
-            if not isinstance(value, str):
-                raise _contract_error("referer_patterns must contain strings")
-            normalized.extend(part.strip() for part in value.split(",") if part.strip())
-        return normalized
+        return _normalize_referer_patterns(values)
 
 
 class AccessRuleCreate(AccessRuleBase):
@@ -121,16 +151,25 @@ class AccessRuleUpdate(BaseModel):
     proxy_requirement: ProxyRequirement | None = None
     is_active: bool | None = None
 
-    _validate_rule_name = field_validator("name")(AccessRuleBase.validate_rule_name)
-    _normalize_countries = field_validator("countries")(
-        AccessRuleBase.normalize_countries
-    )
-    _normalize_platforms = field_validator("ua_platforms")(
-        AccessRuleBase.normalize_platforms
-    )
-    _normalize_referer_patterns = field_validator("referer_patterns")(
-        AccessRuleBase.normalize_referer_patterns
-    )
+    @field_validator("name")
+    @classmethod
+    def validate_rule_name(cls, value: str) -> str:
+        return _normalize_rule_name(value)
+
+    @field_validator("countries")
+    @classmethod
+    def normalize_countries(cls, values: list[str]) -> list[str]:
+        return _normalize_countries(values)
+
+    @field_validator("ua_platforms")
+    @classmethod
+    def normalize_platforms(cls, values: list[str]) -> list[str]:
+        return _normalize_platforms(values)
+
+    @field_validator("referer_patterns")
+    @classmethod
+    def normalize_referer_patterns(cls, values: list[str]) -> list[str]:
+        return _normalize_referer_patterns(values)
 
 
 class AccessRuleResponse(AccessRuleBase):
