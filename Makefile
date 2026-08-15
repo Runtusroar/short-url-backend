@@ -1,4 +1,4 @@
-.PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash
+.PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
 
 # Auto-detect docker compose command (modern Docker uses "docker compose", older versions use "docker-compose")
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
@@ -49,3 +49,12 @@ init: up migrate create-domain create-admin
 
 bash:
 	$(DOCKER_COMPOSE) exec app bash
+
+# Update MaxMind GeoIP database via geoipupdate container.
+# If MaxMind blocks your server IP, pass a proxy:
+#   make geoip-update HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
+geoip-update:
+	$(DOCKER_COMPOSE) --profile geoip run --rm \
+		-e HTTP_PROXY=$(HTTP_PROXY) \
+		-e HTTPS_PROXY=$(HTTPS_PROXY) \
+		geoipupdate
