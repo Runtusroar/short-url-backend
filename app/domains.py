@@ -9,9 +9,6 @@ from app.models import Domain, User, UserDomain
 
 
 def _get_host(request: Request) -> str:
-    forwarded_host = request.headers.get("x-forwarded-host")
-    if forwarded_host:
-        return forwarded_host.split(",")[0].strip().lower()
     host = request.headers.get("host", "localhost")
     return host.split(":")[0].lower()
 
@@ -52,5 +49,4 @@ async def require_domain_access(
     if not await _has_domain_access(current_user, current_domain.id, db):
         raise PermissionDeniedError("无权访问该域名")
     return current_domain
-
 
