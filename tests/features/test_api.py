@@ -304,6 +304,59 @@ async def test_duplicate_username_conflict(client, admin_token):
     assert resp.status_code == 409
 
 
+@pytest.mark.parametrize("username", [123, None])
+async def test_create_user_rejects_non_string_username(client, admin_token, username):
+    response = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={
+            "username": username,
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "VALIDATION_ERROR",
+        "message": "usernameInput should be a valid string",
+    }
+
+
+@pytest.mark.parametrize("username", [123, None])
+async def test_update_user_rejects_non_string_username(client, admin_token, username):
+    users = await client.get("/api/admin/users", headers=_auth(admin_token))
+    client_id = next(user["id"] for user in users.json() if user["username"] == "client")
+    response = await client.put(
+        f"/api/admin/users/{client_id}",
+        headers=_auth(admin_token),
+        json={"username": username},
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "VALIDATION_ERROR",
+        "message": "usernameInput should be a valid string",
+    }
+
+
+async def test_create_user_rejects_username_shortened_below_minimum(client, admin_token):
+    response = await client.post(
+        "/api/admin/users",
+        headers=_auth(admin_token),
+        json={
+            "username": " ab ",
+            "password": "secret1",
+            "role": "client",
+            "domain_ids": [],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "VALIDATION_ERROR",
+        "message": "usernameString should have at least 3 characters",
+    }
+
+
 async def test_usernames_are_lowercase_and_case_insensitively_unique(client, admin_token):
     created = await client.post(
         "/api/admin/users",

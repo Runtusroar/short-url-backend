@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -15,8 +16,8 @@ class UserBase(BaseModel):
 
     @field_validator("username", mode="before")
     @classmethod
-    def normalize_username_value(cls, value: str) -> str:
-        return normalize_username(value)
+    def normalize_username_value(cls, value: Any) -> Any:
+        return normalize_username(value) if isinstance(value, str) else value
 
 
 class UserCreate(UserBase):
@@ -26,7 +27,7 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(BaseModel):
-    username: str | None = Field(default=None, min_length=3, max_length=64)
+    username: str = Field(default=None, min_length=3, max_length=64)
     password: str | None = Field(default=None, min_length=6)
     role: UserRole | None = None
     domain_ids: list[UUID] | None = None
@@ -34,8 +35,8 @@ class UserUpdate(BaseModel):
 
     @field_validator("username", mode="before")
     @classmethod
-    def normalize_username_value(cls, value: str | None) -> str | None:
-        return normalize_username(value) if value is not None else None
+    def normalize_username_value(cls, value: Any) -> Any:
+        return normalize_username(value) if isinstance(value, str) else value
 
 
 class UserResponse(BaseModel):
