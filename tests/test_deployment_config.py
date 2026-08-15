@@ -1,4 +1,8 @@
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,3 +51,68 @@ def test_makefile_has_one_environment_agnostic_entrypoint():
     assert "up: check-config" in makefile
     assert "dev-up:" not in makefile
     assert "prod-up:" not in makefile
+
+
+@pytest.mark.parametrize(
+    ("required_url", "value"),
+    [
+        ("DATABASE_URL", None),
+        ("DATABASE_URL", ""),
+        ("REDIS_URL", None),
+        ("REDIS_URL", ""),
+    ],
+)
+def test_production_compose_rejects_missing_or_empty_service_urls(
+    tmp_path, required_url, value
+):
+    values = {
+        "APP_ENV": "prod",
+        "DATABASE_URL": "postgresql+psycopg://user:pass@db:5432/app",
+        "REDIS_URL": "redis://redis:6379/0",
+        "SECRET_KEY": "x" * 32,
+        "COOKIE_SECURE": "true",
+        "CORS_ORIGINS": "https://admin.example.com",
+        "LOG_LEVEL": "INFO",
+        "TRUST_PROXY_HEADERS": "true",
+        "GEOIPUPDATE_ACCOUNT_ID": "",
+        "GEOIPUPDATE_LICENSE_KEY": "",
+    }
+    if value is None:
+        del values[required_url]
+    else:
+        values[required_url] = value
+
+    env_file = tmp_path / "production.env"
+    env_file.write_text("".join(f"{key}={item}\n" for key, item in values.items()))
+    process_env = os.environ.copy()
+    process_env["APP_ENV"] = "prod"
+    process_env.pop("DATABASE_URL", None)
+    process_env.pop("REDIS_URL", None)
+    result = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "config", "--quiet"],
+        cwd=ROOT,
+        env=process_env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert required_url in result.stderr
+
+
+def test_make_restart_validates_then_recreates_app():
+    result = subprocess.run(
+        ["make", "-n", "DOCKER_COMPOSE=docker compose", "restart"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    commands = result.stdout.splitlines()
+    assert commands == [
+        "docker compose config --quiet",
+        "docker compose run --rm --build --no-deps app python scripts/check_config.py",
+        "docker compose up -d --force-recreate app",
+    ]
+    assert "docker compose restart app" not in result.stdout

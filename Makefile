@@ -25,8 +25,8 @@ build:
 rebuild:
 	$(DOCKER_COMPOSE) up -d --build app
 
-restart:
-	$(DOCKER_COMPOSE) restart app
+restart: check-config
+	$(DOCKER_COMPOSE) up -d --force-recreate app
 
 logs:
 	$(DOCKER_COMPOSE) logs -f app
