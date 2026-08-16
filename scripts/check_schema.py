@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,7 +10,7 @@ from sqlalchemy import create_engine, inspect, text
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# Each definition is a final Phase 5 object, not a subset chosen for a
+# Each definition is a final Phase 6 object, not a subset chosen for a
 # particular query.  Preflight permits an object to be absent because the
 # migration chain can create it; a same-named object with different facts is
 # drift and must never be guessed at or overwritten.
@@ -131,6 +132,14 @@ PHASE5_CHECK_SQL = (
     "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
 )
 PHASE5_EXTENSION = "pg_trgm"
+PHASE6_PROXY_ERROR_CHECK = "ck_access_logs_proxy_error_code"
+PHASE6_PROXY_ERROR_CHECK_SQL = (
+    "proxy_error_code IS NULL OR proxy_error_code = ANY "
+    "(ARRAY['disabled', 'redis_unavailable', 'auth_failed', "
+    "'insufficient_funds', 'permission_denied', 'rate_limited', 'timeout', "
+    "'upstream_error', 'invalid_response', 'ip_not_found', 'invalid_ip', "
+    "'non_global_ip', 'lookup_contended'])"
+)
 EXPECTED_INDEX_SORTING = {
     name: definition["sorting"]
     for definitions in EXPECTED_INDEXES.values()
@@ -190,7 +199,10 @@ def _normalize_predicate(value: object) -> str | None:
 def _normalize_check(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    return " ".join(value.replace("::text", "").split())
+    normalized = " ".join(
+        value.replace("::character varying", "").replace("::text", "").split()
+    )
+    return re.sub(r" OR \((.+)\)$", r" OR \1", normalized)
 
 
 def evaluate_schema(
@@ -515,6 +527,29 @@ def evaluate_schema(
             error_code="check_definition_mismatch",
             detail=f"short_links.{PHASE5_CHECK}",
             schema="drifted",
+            indexes="invalid",
+            target_url_ondelete=normalized_ondelete,
+        )
+    actual_proxy_error_check = (schema_checks or {}).get("access_logs", {}).get(
+        PHASE6_PROXY_ERROR_CHECK
+    )
+    if actual_proxy_error_check is not None and _normalize_check(
+        actual_proxy_error_check
+    ) != _normalize_check(PHASE6_PROXY_ERROR_CHECK_SQL):
+        return _error(
+            mode=mode,
+            error_code="check_definition_mismatch",
+            detail=f"access_logs.{PHASE6_PROXY_ERROR_CHECK}",
+            schema="drifted",
+            indexes="invalid",
+            target_url_ondelete=normalized_ondelete,
+        )
+    if mode == "post" and actual_proxy_error_check is None:
+        return _error(
+            mode=mode,
+            error_code="required_check_missing",
+            detail=f"access_logs.{PHASE6_PROXY_ERROR_CHECK}",
+            schema="incomplete",
             indexes="invalid",
             target_url_ondelete=normalized_ondelete,
         )

@@ -79,3 +79,18 @@ def test_target_url_drift_repair_revision_extends_index_repair():
 
     assert revision.revision == "d6e8f0a21b35"
     assert revision.down_revision == "c4b7e2a19f03"
+
+
+def test_proxy_error_revision_extends_phase_five_head():
+    revision_path = (
+        Path(__file__).parents[2]
+        / "alembic/versions/f84c2d7a901e_add_proxy_error_code.py"
+    )
+    spec = spec_from_file_location("add_proxy_error_code", revision_path)
+    assert spec is not None
+    assert spec.loader is not None
+    revision = module_from_spec(spec)
+    spec.loader.exec_module(revision)
+
+    assert revision.revision == "f84c2d7a901e"
+    assert revision.down_revision == "c8e4f1a26b73"

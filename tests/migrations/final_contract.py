@@ -336,6 +336,7 @@ FINAL_SCHEMA_CONTRACT = {
             "is_anonymous": column("BOOLEAN", True),
             "proxy_types": column("JSONB", False, "json_empty"),
             "proxy_source": column("VARCHAR(32)", True),
+            "proxy_error_code": column("VARCHAR(32)", True),
         },
         "checks": {
             "ck_access_logs_result": "result = ANY (ARRAY['allowed', 'denied', 'blocked'])",
@@ -345,6 +346,7 @@ FINAL_SCHEMA_CONTRACT = {
             "ck_access_logs_proxy_check_status": "proxy_check_status = ANY (ARRAY['skipped', 'cached', 'checked', 'assumed_bot', 'error'])",
             "ck_access_logs_proxy_source": "proxy_source IS NULL OR (proxy_source = ANY (ARRAY['maxmind_insights', 'assumed_bot']))",
             "ck_access_logs_proxy_types_array": "jsonb_typeof(proxy_types) = 'array'",
+            "ck_access_logs_proxy_error_code": "proxy_error_code IS NULL OR proxy_error_code = ANY (ARRAY['disabled', 'redis_unavailable', 'auth_failed', 'insufficient_funds', 'permission_denied', 'rate_limited', 'timeout', 'upstream_error', 'invalid_response', 'ip_not_found', 'invalid_ip', 'non_global_ip', 'lookup_contended'])",
         },
         "indexes": {
             "idx_access_logs_domain_accessed_at": (

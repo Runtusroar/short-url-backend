@@ -8,9 +8,11 @@ from sqlalchemy import create_engine, text
 
 from tests.migrations.support import get_schema_contract, run_alembic
 
-HEAD = "c8e4f1a26b73"
+HEAD = "f84c2d7a901e"
+PHASE5_HEAD = "c8e4f1a26b73"
 D6 = "d6e8f0a21b35"
 TASK_PREVIOUS_REVISIONS = (
+    PHASE5_HEAD,
     "a73f0b9d4216",
     D6,
     "f31a8c0d4e72",
@@ -300,6 +302,25 @@ def test_final_head_round_trips_a73_with_representable_rows(migration_database_u
         engine.dispose()
     run_alembic(migration_database_url, "upgrade", HEAD)
     run_alembic(migration_database_url, "downgrade", "a73f0b9d4216")
+    run_alembic(migration_database_url, "upgrade", HEAD)
+    _assert_seed_ids_counts_and_conversions(
+        migration_database_url, ids, expected_counts
+    )
+
+
+def test_final_head_round_trips_phase_five_with_null_proxy_errors(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", D6)
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            ids, expected_counts = _seed_representable_d6_rows(connection)
+    finally:
+        engine.dispose()
+    run_alembic(migration_database_url, "upgrade", PHASE5_HEAD)
+    run_alembic(migration_database_url, "upgrade", HEAD)
+    run_alembic(migration_database_url, "downgrade", PHASE5_HEAD)
     run_alembic(migration_database_url, "upgrade", HEAD)
     _assert_seed_ids_counts_and_conversions(
         migration_database_url, ids, expected_counts

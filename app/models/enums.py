@@ -49,3 +49,19 @@ class ProxyCheckStatus(StrEnum):
 class ProxySource(StrEnum):
     MAXMIND_INSIGHTS = "maxmind_insights"
     ASSUMED_BOT = "assumed_bot"
+
+
+class ProxyErrorCode(StrEnum):
+    DISABLED = "disabled"
+    REDIS_UNAVAILABLE = "redis_unavailable"
+    AUTH_FAILED = "auth_failed"
+    INSUFFICIENT_FUNDS = "insufficient_funds"
+    PERMISSION_DENIED = "permission_denied"
+    RATE_LIMITED = "rate_limited"
+    TIMEOUT = "timeout"
+    UPSTREAM_ERROR = "upstream_error"
+    INVALID_RESPONSE = "invalid_response"
+    IP_NOT_FOUND = "ip_not_found"
+    INVALID_IP = "invalid_ip"
+    NON_GLOBAL_IP = "non_global_ip"
+    LOOKUP_CONTENDED = "lookup_contended"

@@ -81,6 +81,7 @@ class AccessLog(Base):
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
     proxy_source = Column(String(32), nullable=True)
+    proxy_error_code = Column(String(32), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -108,6 +109,14 @@ class AccessLog(Base):
             "proxy_source IS NULL OR (proxy_source = ANY "
             "(ARRAY['maxmind_insights', 'assumed_bot']))",
             name="ck_access_logs_proxy_source",
+        ),
+        CheckConstraint(
+            "proxy_error_code IS NULL OR proxy_error_code = ANY "
+            "(ARRAY['disabled', 'redis_unavailable', 'auth_failed', "
+            "'insufficient_funds', 'permission_denied', 'rate_limited', 'timeout', "
+            "'upstream_error', 'invalid_response', 'ip_not_found', 'invalid_ip', "
+            "'non_global_ip', 'lookup_contended'])",
+            name="ck_access_logs_proxy_error_code",
         ),
         CheckConstraint(
             "jsonb_typeof(proxy_types) = 'array'",

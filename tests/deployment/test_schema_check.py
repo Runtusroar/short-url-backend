@@ -141,6 +141,14 @@ FINAL_ACCESS_LOG_ACTIONS = {
     "target_url_id": "SET NULL",
     "matched_rule_id": "SET NULL",
 }
+PROXY_ERROR_CHECK = "ck_access_logs_proxy_error_code"
+PROXY_ERROR_CHECK_SQL = (
+    "proxy_error_code IS NULL OR proxy_error_code = ANY "
+    "(ARRAY['disabled', 'redis_unavailable', 'auth_failed', "
+    "'insufficient_funds', 'permission_denied', 'rate_limited', 'timeout', "
+    "'upstream_error', 'invalid_response', 'ip_not_found', 'invalid_ip', "
+    "'non_global_ip', 'lookup_contended'])"
+)
 
 
 def _ready_indexes():
@@ -223,7 +231,8 @@ def _evaluate(*, mode="post", **overrides):
         "schema_checks": {
             "short_links": {
                 "ck_short_links_short_code_canonical": "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
-            }
+            },
+            "access_logs": {PROXY_ERROR_CHECK: PROXY_ERROR_CHECK_SQL},
         },
         "extensions": {"pg_trgm"},
         "foreign_key_actions": _ready_foreign_keys(),
@@ -459,6 +468,42 @@ def test_pre_rejects_same_named_canonical_check_with_wrong_definition():
     )
     assert result["status"] == "error"
     assert result["error_code"] == "check_definition_mismatch"
+
+
+def test_pre_allows_phase_five_schema_without_proxy_error_check():
+    result = _evaluate(
+        mode="pre",
+        schema_checks={
+            "short_links": {
+                "ck_short_links_short_code_canonical": "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
+            },
+            "access_logs": {},
+        },
+    )
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("mode", ("pre", "post"))
+def test_rejects_missing_or_conflicting_proxy_error_check(mode):
+    canonical_short_link_check = {
+        "ck_short_links_short_code_canonical": "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
+    }
+    missing = _evaluate(
+        mode=mode,
+        schema_checks={"short_links": canonical_short_link_check, "access_logs": {}},
+    )
+    if mode == "pre":
+        assert missing["status"] == "ok"
+    else:
+        assert missing["error_code"] == "required_check_missing"
+    conflicting = _evaluate(
+        mode=mode,
+        schema_checks={
+            "short_links": canonical_short_link_check,
+            "access_logs": {PROXY_ERROR_CHECK: "true"},
+        },
+    )
+    assert conflicting["error_code"] == "check_definition_mismatch"
 
 
 @pytest.mark.parametrize("mode", ("pre", "post"))

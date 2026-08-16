@@ -47,7 +47,8 @@ def _normalized_check(value: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
-    return re.sub(r"\s+", " ", without_casts).strip()
+    normalized = re.sub(r"\s+", " ", without_casts).strip()
+    return re.sub(r" OR \((.+)\)$", r" OR \1", normalized)
 
 
 def _actual_indexes(
