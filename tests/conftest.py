@@ -1,5 +1,6 @@
 import os
 import uuid
+from pathlib import Path
 
 os.environ.setdefault("REDIS_URL", "")
 os.environ.setdefault(
@@ -10,7 +11,7 @@ os.environ.setdefault(
 import pytest
 import pytest_asyncio
 from asgi_lifespan import LifespanManager
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 
 from app.core.config import settings
@@ -20,6 +21,17 @@ from app.main import app
 
 _sync_url = settings.database_url.replace("+asyncpg", "+psycopg")
 _sync_engine = create_engine(_sync_url)
+_TESTS_ROOT = Path(__file__).resolve().parent
+_MIGRATION_TESTS_ROOT = _TESTS_ROOT / "migrations"
+_SCHEMA_CHECK_TEST = _TESTS_ROOT / "deployment" / "test_schema_check.py"
+
+
+def _uses_disposable_schema_database(path: Path | str) -> bool:
+    """Allow only exact migration/schema-check test paths to bypass shared DDL."""
+    resolved = Path(path).resolve()
+    return resolved == _SCHEMA_CHECK_TEST or (
+        resolved.is_relative_to(_MIGRATION_TESTS_ROOT) and resolved.suffix == ".py"
+    )
 
 
 def _insert_user(conn, user_id: uuid.UUID, username: str, password: str, role: str):
@@ -44,10 +56,7 @@ def setup_database(request: pytest.FixtureRequest):
     """Create a fresh test schema and seed base accounts."""
     # Migration tests own isolated UUID-named databases and must never touch
     # the application's shared test database as an incidental autouse effect.
-    if (
-        request.module.__name__.startswith("tests.migrations.")
-        or request.module.__name__ == "tests.deployment.test_schema_check"
-    ):
+    if _uses_disposable_schema_database(request.path):
         yield
         return
 

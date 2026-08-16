@@ -294,10 +294,26 @@ def evaluate_schema(
     # set is present.  This keeps a clean Phase 3 database repairable.
     has_complete_final_indexes = not missing_indexes
     if mode == "post" or has_complete_final_indexes:
+        if foreign_key_actions is None or foreign_keys_by_name is None:
+            return _error(
+                mode=mode,
+                error_code="access_log_foreign_key_unknown",
+                detail="access_logs",
+                schema="drifted",
+                indexes="missing" if missing_indexes else "valid",
+                target_url_ondelete=normalized_ondelete,
+            )
         for name, expected in EXPECTED_ACCESS_LOG_FOREIGN_KEYS.items():
             actual = named_foreign_keys.get(name)
             if actual is None:
-                continue
+                return _error(
+                    mode=mode,
+                    error_code="access_log_foreign_key_missing",
+                    detail=f"access_logs.{name}",
+                    schema="drifted",
+                    indexes="missing" if missing_indexes else "valid",
+                    target_url_ondelete=normalized_ondelete,
+                )
             if actual != expected:
                 return _error(
                     mode=mode,
@@ -307,47 +323,36 @@ def evaluate_schema(
                     indexes="missing" if missing_indexes else "valid",
                     target_url_ondelete=normalized_ondelete,
                 )
-
-    if mode == "post":
-        if missing_indexes:
-            return _error(
-                mode=mode,
-                error_code="required_index_missing",
-                detail=",".join(missing_indexes),
-                schema="incomplete",
-                indexes="missing",
-                target_url_ondelete=normalized_ondelete,
-            )
-        if foreign_key_actions is None or foreign_keys_by_name is None:
-            return _error(
-                mode=mode,
-                error_code="access_log_foreign_key_unknown",
-                detail="access_logs",
-                schema="drifted",
-                indexes="valid",
-                target_url_ondelete=normalized_ondelete,
-            )
-        for name, expected in EXPECTED_ACCESS_LOG_FOREIGN_KEYS.items():
-            if named_foreign_keys.get(name) != expected:
+        for column, expected in EXPECTED_ONDELETE.items():
+            actual = foreign_key_actions.get(column)
+            if actual is None:
                 return _error(
                     mode=mode,
-                    error_code="access_log_foreign_key_mismatch",
-                    detail=f"access_logs.{name}",
+                    error_code="access_log_foreign_key_missing",
+                    detail=f"access_logs.{column}",
                     schema="drifted",
-                    indexes="valid",
+                    indexes="missing" if missing_indexes else "valid",
                     target_url_ondelete=normalized_ondelete,
                 )
-        for column, expected in EXPECTED_ONDELETE.items():
-            if foreign_key_actions.get(column) != expected:
+            if actual != expected:
                 return _error(
                     mode=mode,
                     error_code="access_log_foreign_key_mismatch",
                     detail=f"access_logs.{column}",
                     schema="drifted",
-                    indexes="valid",
+                    indexes="missing" if missing_indexes else "valid",
                     target_url_ondelete=normalized_ondelete,
                 )
 
+    if mode == "post" and missing_indexes:
+        return _error(
+            mode=mode,
+            error_code="required_index_missing",
+            detail=",".join(missing_indexes),
+            schema="incomplete",
+            indexes="missing",
+            target_url_ondelete=normalized_ondelete,
+        )
     if missing_indexes:
         return {
             "mode": mode,

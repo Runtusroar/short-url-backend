@@ -1,6 +1,15 @@
 import uuid
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import INET, UUID
 
 from app.core.database import Base
@@ -16,11 +25,13 @@ class IpBlacklist(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    ip = Column(INET, unique=True, nullable=False)
+    ip = Column(INET, nullable=False)
     reason = Column(Text, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_ip_blacklist_created_by", ondelete="RESTRICT"),
+        nullable=True,
     )
     created_at = Column(
         DateTime(timezone=True),
@@ -30,11 +41,14 @@ class IpBlacklist(Base):
     )
     removed_at = Column(DateTime(timezone=True), nullable=True)
     removed_by = Column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_ip_blacklist_removed_by", ondelete="RESTRICT"),
+        nullable=True,
     )
     removal_reason = Column(Text, nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("ip", name="ip_blacklist_ip_key"),
         CheckConstraint("btrim(reason) <> ''", name="ck_ip_blacklist_reason"),
         CheckConstraint(
             "removed_by IS NULL OR removed_at IS NOT NULL",

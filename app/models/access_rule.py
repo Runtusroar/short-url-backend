@@ -30,7 +30,9 @@ class AccessRule(Base):
     )
     short_link_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("short_links.id", ondelete="CASCADE"),
+        ForeignKey(
+            "short_links.id", name="fk_access_rules_short_link", ondelete="CASCADE"
+        ),
         nullable=False,
     )
     name = Column(String(128), nullable=False)
@@ -78,13 +80,15 @@ class AccessRule(Base):
         UniqueConstraint(
             "short_link_id", "priority", name="uq_access_rules_link_priority"
         ),
-        CheckConstraint("action IN ('allow', 'deny')", name="ck_access_rules_action"),
         CheckConstraint(
-            "client_requirement IN ('any', 'human', 'bot')",
+            "action = ANY (ARRAY['allow', 'deny'])", name="ck_access_rules_action"
+        ),
+        CheckConstraint(
+            "client_requirement = ANY (ARRAY['any', 'human', 'bot'])",
             name="ck_access_rules_client_requirement",
         ),
         CheckConstraint(
-            "proxy_requirement IN ('any', 'non_proxy', 'proxy')",
+            "proxy_requirement = ANY (ARRAY['any', 'non_proxy', 'proxy'])",
             name="ck_access_rules_proxy_requirement",
         ),
         CheckConstraint(

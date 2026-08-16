@@ -21,23 +21,50 @@ class Domain(Base):
     __tablename__ = "domains"
 
     id = Column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()")
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
-    name = Column(String(255), unique=True, nullable=False)
-    timezone = Column(String(64), default="Asia/Shanghai", server_default=text("'Asia/Shanghai'"), nullable=False)
-    is_active = Column(Boolean, default=True, server_default=text("true"), nullable=False)
-    is_default = Column(Boolean, default=False, server_default=text("false"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=now_utc, server_default=text("now()"), nullable=False)
+    name = Column(String(255), nullable=False)
+    timezone = Column(
+        String(64),
+        default="Asia/Shanghai",
+        server_default=text("'Asia/Shanghai'"),
+        nullable=False,
+    )
+    is_active = Column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    is_default = Column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=text("now()"),
+        nullable=False,
+    )
     updated_at = Column(
-        DateTime(timezone=True), default=now_utc, onupdate=now_utc, server_default=text("now()"), nullable=False
+        DateTime(timezone=True),
+        default=now_utc,
+        onupdate=now_utc,
+        server_default=text("now()"),
+        nullable=False,
     )
 
     __table_args__ = (
+        UniqueConstraint("name", name="domains_name_key"),
         CheckConstraint(
             r"name = lower(btrim(name)) AND length(name) <= 253 AND name ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'",
             name="ck_domains_name_lower_host",
         ),
-        Index("uq_domains_one_default", "is_default", unique=True, postgresql_where=text("is_default")),
+        Index(
+            "uq_domains_one_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
     )
 
 
@@ -45,14 +72,32 @@ class UserDomain(Base):
     __tablename__ = "user_domains"
 
     id = Column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()")
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_user_domains_user", ondelete="RESTRICT"),
+        nullable=False,
+    )
     domain_id = Column(
-        UUID(as_uuid=True), ForeignKey("domains.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("domains.id", name="fk_user_domains_domain", ondelete="RESTRICT"),
+        nullable=False,
     )
-    granted_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=now_utc, server_default=text("now()"), nullable=False)
+    granted_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_user_domains_granted_by", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        default=now_utc,
+        server_default=text("now()"),
+        nullable=False,
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "domain_id", name="uq_user_domain"),

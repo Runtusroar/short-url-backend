@@ -1,14 +1,13 @@
 """End-to-end Phase 4 migration contract on disposable PostgreSQL databases."""
 
-from uuid import UUID, uuid4
 from subprocess import CalledProcessError
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from app.core.database import Base
 from tests.migrations.support import get_schema_contract, run_alembic
-
 
 HEAD = "a73f0b9d4216"
 D6 = "d6e8f0a21b35"
@@ -19,6 +18,17 @@ TASK_PREVIOUS_REVISIONS = (
     "de4c81b75920",
     "e52d9a6c8031",
 )
+SEEDED_ROWS = {
+    "users": "user",
+    "domains": "domain",
+    "user_domains": "grant",
+    "short_links": "link",
+    "short_link_permissions": "permission",
+    "target_urls": "target",
+    "access_rules": "rule",
+    "ip_blacklist": "blacklist",
+    "access_logs": "log",
+}
 
 
 def _normalized_type_name(value: object) -> str:
@@ -26,7 +36,14 @@ def _normalized_type_name(value: object) -> str:
     return "TIMESTAMP" if str(value).upper() == "DATETIME" else str(value).upper()
 
 
-def _seed_representable_d6_rows(connection) -> dict[str, UUID]:
+def _table_counts(connection) -> dict[str, int]:
+    return {
+        table_name: connection.scalar(text(f"SELECT count(*) FROM {table_name}"))
+        for table_name in SEEDED_ROWS
+    }
+
+
+def _seed_representable_d6_rows(connection) -> tuple[dict[str, UUID], dict[str, int]]:
     ids = {
         name: uuid4()
         for name in (
@@ -100,32 +117,54 @@ def _seed_representable_d6_rows(connection) -> dict[str, UUID]:
             "target_id": ids["target"],
         },
     )
-    return ids
+    return ids, _table_counts(connection)
 
 
-def _assert_seed_ids_and_counts(database_url: str, ids: dict[str, UUID]) -> None:
-    expected_tables = {
-        "users": ids["user"],
-        "domains": ids["domain"],
-        "user_domains": ids["grant"],
-        "short_links": ids["link"],
-        "short_link_permissions": ids["permission"],
-        "target_urls": ids["target"],
-        "access_rules": ids["rule"],
-        "ip_blacklist": ids["blacklist"],
-        "access_logs": ids["log"],
-    }
+def _assert_seed_ids_counts_and_conversions(
+    database_url: str, ids: dict[str, UUID], expected_counts: dict[str, int]
+) -> None:
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            for table_name, row_id in expected_tables.items():
+            assert _table_counts(connection) == expected_counts
+            for table_name, row_key in SEEDED_ROWS.items():
                 assert (
                     connection.scalar(
                         text(f"SELECT count(*) FROM {table_name} WHERE id = :id"),
-                        {"id": row_id},
+                        {"id": ids[row_key]},
                     )
                     == 1
                 )
+            assert (
+                connection.scalar(
+                    text("SELECT name FROM short_links WHERE id = :id"),
+                    {"id": ids["link"]},
+                )
+                == "Phase 4 legacy"
+            )
+            assert connection.execute(
+                text(
+                    "SELECT name, client_requirement, proxy_requirement "
+                    "FROM access_rules WHERE id = :id"
+                ),
+                {"id": ids["rule"]},
+            ).one() == ("Rule 0", "any", "any")
+            assert connection.execute(
+                text(
+                    "SELECT host(client_ip), user_agent, request_host, request_method, "
+                    "decision_reason, proxy_check_status, proxy_types "
+                    "FROM access_logs WHERE id = :id"
+                ),
+                {"id": ids["log"]},
+            ).one() == (
+                "198.51.100.9",
+                "legacy agent",
+                "phase4.example.test",
+                "GET",
+                "legacy_unknown",
+                "skipped",
+                [],
+            )
     finally:
         engine.dispose()
 
@@ -176,11 +215,13 @@ def test_phase_three_representative_rows_upgrade_to_head_with_ids_and_counts(
     engine = create_engine(migration_database_url)
     try:
         with engine.begin() as connection:
-            ids = _seed_representable_d6_rows(connection)
+            ids, expected_counts = _seed_representable_d6_rows(connection)
     finally:
         engine.dispose()
     run_alembic(migration_database_url, "upgrade", "head")
-    _assert_seed_ids_and_counts(migration_database_url, ids)
+    _assert_seed_ids_counts_and_conversions(
+        migration_database_url, ids, expected_counts
+    )
 
 
 @pytest.mark.parametrize(
@@ -238,13 +279,15 @@ def test_final_head_round_trips_each_task_previous_revision_with_representable_r
     engine = create_engine(migration_database_url)
     try:
         with engine.begin() as connection:
-            ids = _seed_representable_d6_rows(connection)
+            ids, expected_counts = _seed_representable_d6_rows(connection)
     finally:
         engine.dispose()
     run_alembic(migration_database_url, "upgrade", "head")
     run_alembic(migration_database_url, "downgrade", previous_revision)
     run_alembic(migration_database_url, "upgrade", "head")
-    _assert_seed_ids_and_counts(migration_database_url, ids)
+    _assert_seed_ids_counts_and_conversions(
+        migration_database_url, ids, expected_counts
+    )
 
 
 def test_final_database_matches_every_orm_column_default_nullability_check_and_fk(
