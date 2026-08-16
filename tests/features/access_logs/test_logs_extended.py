@@ -675,6 +675,88 @@ async def test_non_admin_cannot_override_effective_domain(
     assert response.status_code == 403
 
 
+async def test_explicit_link_authorization_intersects_effective_domain(
+    client, admin_token, default_domain
+):
+    suffix = uuid4().hex[:8]
+    domain_b_response = await client.post(
+        "/api/domains",
+        headers=_auth(admin_token),
+        json={"name": f"explicit-scope-{suffix}.test"},
+    )
+    assert domain_b_response.status_code == 200, domain_b_response.text
+    domain_b = domain_b_response.json()
+
+    users = {}
+    for role in ("operator", "client"):
+        username = f"scope-{role[:2]}-{suffix}"
+        created = await client.post(
+            "/api/admin/users",
+            headers=_auth(admin_token),
+            json={
+                "username": username,
+                "password": "secret123",
+                "role": role,
+                "domain_ids": [default_domain["id"], domain_b["id"]],
+            },
+        )
+        assert created.status_code == 200, created.text
+        login = await client.post(
+            "/api/auth/login",
+            data={"username": username, "password": "secret123"},
+        )
+        assert login.status_code == 200, login.text
+        users[role] = {
+            "id": created.json()["id"],
+            "token": login.json()["access_token"],
+        }
+
+    operator_link_response = await client.post(
+        "/api/short-links",
+        headers={**_auth(users["operator"]["token"]), **_host(domain_b["name"])},
+        json={
+            "domain_id": domain_b["id"],
+            "custom_alias": f"scope-op-{suffix}",
+            "name": "Cross-domain operator link",
+        },
+    )
+    assert operator_link_response.status_code == 200, operator_link_response.text
+    operator_link = operator_link_response.json()
+
+    client_link_response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host(domain_b["name"])},
+        json={
+            "domain_id": domain_b["id"],
+            "custom_alias": f"scope-client-{suffix}",
+            "name": "Cross-domain client link",
+        },
+    )
+    assert client_link_response.status_code == 200, client_link_response.text
+    client_link = client_link_response.json()
+    granted = await client.post(
+        f"/api/short-links/{client_link['id']}/permissions",
+        headers={**_auth(admin_token), **_host(domain_b["name"])},
+        json={"user_id": users["client"]["id"]},
+    )
+    assert granted.status_code == 200, granted.text
+
+    status_by_role = {}
+    for role, token, link_id in (
+        ("admin", admin_token, client_link["id"]),
+        ("operator", users["operator"]["token"], operator_link["id"]),
+        ("client", users["client"]["token"], client_link["id"]),
+    ):
+        response = await client.get(
+            "/api/logs",
+            headers={**_auth(token), **_host()},
+            params={"short_link_id": link_id},
+        )
+        status_by_role[role] = response.status_code
+
+    assert status_by_role == {"admin": 403, "operator": 403, "client": 403}
+
+
 async def test_query_requires_both_log_and_short_link_to_match_effective_domain(
     client, admin_token, default_domain
 ):

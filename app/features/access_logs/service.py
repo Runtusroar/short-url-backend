@@ -65,6 +65,23 @@ async def can_view_link(db: AsyncSession, user: User, link_id: UUID) -> bool:
     return False
 
 
+async def _can_view_link_in_domain(
+    db: AsyncSession,
+    user: User,
+    link_id: UUID,
+    domain_id: UUID,
+) -> bool:
+    link = await db.execute(
+        select(ShortLink.id).where(
+            ShortLink.id == link_id,
+            ShortLink.domain_id == domain_id,
+        )
+    )
+    if link.scalar_one_or_none() is None:
+        return False
+    return await can_view_link(db, user, link_id)
+
+
 async def list_logs(
     db: AsyncSession,
     current_user: User,
@@ -84,7 +101,12 @@ async def list_logs(
         domain_id, current_user, current_domain, db
     )
     if filters.short_link_id:
-        if not await can_view_link(db, current_user, filters.short_link_id):
+        if not await _can_view_link_in_domain(
+            db,
+            current_user,
+            filters.short_link_id,
+            effective_domain.id,
+        ):
             raise PermissionDeniedError()
 
     filter_digest = filters.digest_scope(effective_domain.id, current_user)
