@@ -66,16 +66,56 @@ def test_maxmind_license_key_is_redacted_in_settings_repr():
     assert secret not in repr(settings)
 
 
-def test_maxmind_license_key_is_redacted_in_validation_output():
-    secret = "leak-me"
+def assert_secret_is_absent_from_validation_output(secret, error):
+    for output in (
+        str(error),
+        repr(error),
+        repr(error.errors()),
+        error.json(),
+    ):
+        assert secret not in output
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "maxmind_insights_enabled": True,
+            "maxmind_license_key": "distinctive-license-secret",
+        },
+        {
+            "app_env": "prod",
+            "secret_key": "x" * 32,
+            "cookie_secure": False,
+            "cors_origins": "https://admin.example.com",
+            "maxmind_insights_enabled": True,
+            "maxmind_account_id": 123,
+            "maxmind_license_key": "distinctive-license-secret",
+        },
+    ],
+)
+def test_maxmind_license_key_is_absent_from_all_validation_outputs(overrides):
+    secret = "distinctive-license-secret"
 
     with pytest.raises(ValidationError) as raised:
-        make_settings(
-            maxmind_insights_enabled=True,
-            maxmind_license_key=secret,
-        )
+        make_settings(**overrides)
 
-    assert secret not in str(raised.value)
+    assert_secret_is_absent_from_validation_output(secret, raised.value)
+
+
+def test_maxmind_insights_enabled_rejects_missing_license_key():
+    with pytest.raises(ValidationError, match="MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY"):
+        make_settings(maxmind_insights_enabled=True, maxmind_account_id=123)
+
+
+def test_env_maxmind_license_key_is_absent_from_validation_outputs(monkeypatch):
+    secret = "distinctive-environment-license-secret"
+    monkeypatch.setenv("MAXMIND_LICENSE_KEY", secret)
+
+    with pytest.raises(ValidationError) as raised:
+        Settings(_env_file=None, maxmind_insights_enabled=True)
+
+    assert_secret_is_absent_from_validation_output(secret, raised.value)
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

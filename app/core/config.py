@@ -1,7 +1,8 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import ConfigDict, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 
 DEV_SECRET_VALUES = {
@@ -10,6 +11,27 @@ DEV_SECRET_VALUES = {
     "dev-secret-key-change-me-in-production",
     "change-me-to-a-random-secret-key-at-least-32-characters",
 }
+
+
+def _redact_maxmind_license_key(values: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(values.get("maxmind_license_key"), str):
+        values = values.copy()
+        values["maxmind_license_key"] = SecretStr(values["maxmind_license_key"])
+    return values
+
+
+class _RedactingSettingsSource(PydanticBaseSettingsSource):
+    def __init__(self, source: PydanticBaseSettingsSource):
+        super().__init__(source.settings_cls)
+        self._source = source
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:
+        return self._source.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, Any]:
+        return _redact_maxmind_license_key(self._source())
 
 
 class Settings(BaseSettings):
@@ -29,6 +51,33 @@ class Settings(BaseSettings):
     maxmind_account_id: int | None = None
     maxmind_license_key: SecretStr | None = None
     maxmind_timeout_seconds: float = 1.5
+
+    def __init__(self, **values: Any):
+        super().__init__(**_redact_maxmind_license_key(values))
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return tuple(
+            _RedactingSettingsSource(source)
+            for source in (
+                init_settings,
+                env_settings,
+                dotenv_settings,
+                file_secret_settings,
+            )
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def redact_maxmind_license_key_in_validation_input(cls, values):
+        return _redact_maxmind_license_key(values) if isinstance(values, dict) else values
 
     @field_validator("maxmind_account_id", mode="before")
     @classmethod
