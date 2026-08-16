@@ -34,7 +34,7 @@ def validate_custom_alias(alias: str) -> bool:
 async def create_unique_short_code(
     db: AsyncSession, domain_id: UUID, custom_alias: str | None = None
 ) -> str:
-    if custom_alias:
+    if custom_alias is not None:
         normalized_alias = normalize_short_code(custom_alias)
         if not validate_custom_alias(normalized_alias):
             raise ValueError("Invalid custom alias")

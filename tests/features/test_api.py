@@ -659,6 +659,32 @@ async def test_custom_alias_conflict(client, admin_token, default_domain):
     assert resp.json()["code"] == "INVALID_SHORT_CODE"
 
 
+@pytest.mark.parametrize("custom_alias", ["", "   "])
+async def test_blank_custom_alias_is_rejected_without_creating_an_automatic_code(
+    client, admin_token, default_domain, custom_alias
+):
+    before = await client.get(
+        "/api/short-links", headers={**_auth(admin_token), **_host()}
+    )
+    assert before.status_code == 200
+    response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": custom_alias,
+            "name": "blank custom alias",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_SHORT_CODE"
+    after = await client.get(
+        "/api/short-links", headers={**_auth(admin_token), **_host()}
+    )
+    assert after.status_code == 200
+    assert len(after.json()) == len(before.json())
+
+
 async def test_custom_alias_is_canonical_and_redirect_lookup_is_case_insensitive(
     client, admin_token, default_domain
 ):

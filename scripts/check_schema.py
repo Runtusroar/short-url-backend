@@ -127,6 +127,9 @@ for _name in PHASE4_LOG_INDEXES:
         _name, ("btree", (), tuple("" for _ in _definition["columns"]))
     )
 PHASE5_CHECK = "ck_short_links_short_code_canonical"
+PHASE5_CHECK_SQL = (
+    "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
+)
 PHASE5_EXTENSION = "pg_trgm"
 EXPECTED_INDEX_SORTING = {
     name: definition["sorting"]
@@ -184,6 +187,12 @@ def _normalize_predicate(value: object) -> str | None:
     return " ".join(value.strip().removeprefix("(").removesuffix(")").split())
 
 
+def _normalize_check(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return " ".join(value.replace("::text", "").split())
+
+
 def evaluate_schema(
     *,
     mode: str,
@@ -197,7 +206,7 @@ def evaluate_schema(
     index_using: dict[str, dict[str, str | None]] | None = None,
     index_expressions: dict[str, dict[str, tuple[str, ...] | None]] | None = None,
     index_operator_classes: dict[str, dict[str, tuple[str, ...] | None]] | None = None,
-    schema_checks: dict[str, set[str]] | None = None,
+    schema_checks: dict[str, dict[str, str]] | None = None,
     extensions: set[str] | None = None,
     foreign_key_actions: dict[str, str | None] | None = None,
     foreign_keys_by_name: dict[str, tuple[str, str, str | None]] | None = None,
@@ -409,13 +418,52 @@ def evaluate_schema(
         not in indexes.get("short_links", {})
         and "idx_short_links_domain_code_pattern"
         not in indexes.get("short_links", {})
-        and PHASE5_CHECK not in (schema_checks or {}).get("short_links", set())
+        and PHASE5_CHECK not in (schema_checks or {}).get("short_links", {})
         and PHASE5_EXTENSION not in (extensions or set())
     )
     if mode == "pre" and phase4_predecessor and set(missing_indexes) == {
         "short_links.idx_short_links_name_trgm",
         "short_links.idx_short_links_domain_code_pattern",
     }:
+        if foreign_key_actions is None or foreign_keys_by_name is None:
+            return _error(
+                mode=mode,
+                error_code="access_log_foreign_key_unknown",
+                detail="access_logs",
+                schema="drifted",
+                indexes="missing",
+                target_url_ondelete=normalized_ondelete,
+            )
+        for name, expected in EXPECTED_ACCESS_LOG_FOREIGN_KEYS.items():
+            actual = named_foreign_keys.get(name)
+            if actual is None:
+                return _error(
+                    mode=mode,
+                    error_code="access_log_foreign_key_missing",
+                    detail=f"access_logs.{name}",
+                    schema="drifted",
+                    indexes="missing",
+                    target_url_ondelete=normalized_ondelete,
+                )
+            if actual != expected:
+                return _error(
+                    mode=mode,
+                    error_code="access_log_foreign_key_mismatch",
+                    detail=f"access_logs.{name}",
+                    schema="drifted",
+                    indexes="missing",
+                    target_url_ondelete=normalized_ondelete,
+                )
+        for column, expected in EXPECTED_ONDELETE.items():
+            if foreign_key_actions.get(column) != expected:
+                return _error(
+                    mode=mode,
+                    error_code="access_log_foreign_key_mismatch",
+                    detail=f"access_logs.{column}",
+                    schema="drifted",
+                    indexes="missing",
+                    target_url_ondelete=normalized_ondelete,
+                )
         return {
             "mode": mode,
             "status": "ok",
@@ -451,12 +499,22 @@ def evaluate_schema(
             indexes="invalid",
             target_url_ondelete=normalized_ondelete,
         )
-    if PHASE5_CHECK not in (schema_checks or {}).get("short_links", set()):
+    actual_check = (schema_checks or {}).get("short_links", {}).get(PHASE5_CHECK)
+    if actual_check is None:
         return _error(
             mode=mode,
             error_code="required_check_missing",
             detail=f"short_links.{PHASE5_CHECK}",
             schema="incomplete",
+            indexes="invalid",
+            target_url_ondelete=normalized_ondelete,
+        )
+    if _normalize_check(actual_check) != _normalize_check(PHASE5_CHECK_SQL):
+        return _error(
+            mode=mode,
+            error_code="check_definition_mismatch",
+            detail=f"short_links.{PHASE5_CHECK}",
+            schema="drifted",
             indexes="invalid",
             target_url_ondelete=normalized_ondelete,
         )
@@ -513,7 +571,7 @@ def inspect_schema(
     dict[str, dict[str, str | None]],
     dict[str, dict[str, tuple[str, ...] | None]],
     dict[str, dict[str, tuple[str, ...] | None]],
-    dict[str, set[str]],
+    dict[str, dict[str, str]],
     set[str],
     dict[str, str | None],
     dict[str, tuple[str, str, str | None]],
@@ -529,7 +587,7 @@ def inspect_schema(
         using: dict[str, dict[str, str | None]] = {}
         expressions: dict[str, dict[str, tuple[str, ...] | None]] = {}
         operator_classes: dict[str, dict[str, tuple[str, ...] | None]] = {}
-        schema_checks: dict[str, set[str]] = {}
+        schema_checks: dict[str, dict[str, str]] = {}
         for table_name, definitions in EXPECTED_INDEXES.items():
             (
                 indexes[table_name],
@@ -602,9 +660,10 @@ def inspect_schema(
                     else None
                 )
             schema_checks[table_name] = {
-                check["name"]
+                check["name"]: check["sqltext"]
                 for check in inspector.get_check_constraints(table_name)
                 if isinstance(check.get("name"), str)
+                and isinstance(check.get("sqltext"), str)
             }
         with engine.connect() as connection:
             extensions = set(connection.scalars(text("SELECT extname FROM pg_extension")))

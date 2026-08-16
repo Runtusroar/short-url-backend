@@ -148,7 +148,7 @@ def original_codes(database_url: str) -> list[str]:
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            return list(connection.scalars(text("SELECT short_code FROM short_links ORDER BY created_at")))
+            return list(connection.scalars(text("SELECT short_code FROM short_links ORDER BY id")))
     finally:
         engine.dispose()
 
@@ -189,7 +189,7 @@ def test_short_code_preflight_rejects_before_any_write(
         run_alembic(migration_database_url, "upgrade", HEAD)
     assert invariant in f"{exc_info.value.stdout}\n{exc_info.value.stderr}"
     assert current_revision(migration_database_url) == PREVIOUS
-    assert original_codes(migration_database_url) == list(codes)
+    assert original_codes(migration_database_url) == sorted(codes)
     assert not has_check(migration_database_url, "ck_short_links_short_code_canonical")
     assert not has_index(migration_database_url, "idx_short_links_name_trgm")
 
@@ -197,6 +197,24 @@ def test_short_code_preflight_rejects_before_any_write(
 def test_phase5_downgrade_restores_representable_predecessor_indexes(
     migration_database_url,
 ):
+    run_alembic(migration_database_url, "upgrade", PREVIOUS)
+    owner_id, domain_id, link_id = uuid4(), uuid4(), uuid4()
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            _seed_user_domain(connection, owner_id, domain_id)
+            connection.execute(
+                text(
+                    "INSERT INTO short_links "
+                    "(id, domain_id, short_code, is_custom_alias, name, owner_id, "
+                    "is_active, default_action, created_at, updated_at) "
+                    "VALUES (:id, :domain_id, ' Downgrade7 ', true, 'downgrade', "
+                    ":owner_id, true, 'deny', now(), now())"
+                ),
+                {"id": link_id, "domain_id": domain_id, "owner_id": owner_id},
+            )
+    finally:
+        engine.dispose()
     run_alembic(migration_database_url, "upgrade", HEAD)
     run_alembic(migration_database_url, "downgrade", PREVIOUS)
     contract = get_schema_contract(migration_database_url)
@@ -204,10 +222,27 @@ def test_phase5_downgrade_restores_representable_predecessor_indexes(
     assert "idx_short_links_name_trgm" not in contract["indexes"]["short_links"]
     assert "idx_short_links_domain_code_pattern" not in contract["indexes"]["short_links"]
     assert contract["extensions"] >= {"pg_trgm"}
-    assert contract["indexes"]["access_logs"]["idx_access_logs_domain_accessed_at"]["columns"] == (
-        "domain_id", "accessed_at"
-    )
-    assert contract["indexes"]["access_logs"]["idx_access_logs_domain_accessed_at"]["sorting"] == {
-        "accessed_at": ("desc",)
-    }
+    for name, columns in {
+        "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at"),
+        "idx_access_logs_link_accessed_at": ("short_link_id", "accessed_at"),
+        "idx_access_logs_domain_result_accessed_at": (
+            "domain_id", "result", "accessed_at"
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "domain_id", "country", "accessed_at"
+        ),
+    }.items():
+        assert contract["indexes"]["access_logs"][name]["columns"] == columns
+        assert contract["indexes"]["access_logs"][name]["sorting"] == {
+            "accessed_at": ("desc",)
+        }
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text("SELECT short_code FROM short_links WHERE id = :id"),
+                {"id": link_id},
+            ) == "downgrade7"
+    finally:
+        engine.dispose()
     run_alembic(migration_database_url, "upgrade", HEAD)

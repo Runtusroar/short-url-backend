@@ -220,7 +220,11 @@ def _evaluate(*, mode="post", **overrides):
         "index_using": _ready_using(),
         "index_expressions": _ready_expressions(),
         "index_operator_classes": _ready_operator_classes(),
-        "schema_checks": {"short_links": {"ck_short_links_short_code_canonical"}},
+        "schema_checks": {
+            "short_links": {
+                "ck_short_links_short_code_canonical": "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'"
+            }
+        },
         "extensions": {"pg_trgm"},
         "foreign_key_actions": _ready_foreign_keys(),
         "foreign_keys_by_name": _ready_named_foreign_keys(),
@@ -286,7 +290,7 @@ def test_pre_allows_empty_database_and_repairable_phase_four_schema():
         indexes=indexes,
         index_sorting=sorting,
         index_operator_classes=operator_classes,
-        schema_checks={"short_links": set()},
+        schema_checks={"short_links": {}},
         extensions=set(),
     )
     assert result["status"] == "ok"
@@ -300,7 +304,7 @@ def test_pre_rejects_any_incomplete_contract_other_than_phase_four():
     result = _evaluate(
         mode="pre",
         indexes=indexes,
-        schema_checks={"short_links": set()},
+        schema_checks={"short_links": {}},
         extensions=set(),
     )
     assert result["status"] == "error"
@@ -433,6 +437,74 @@ def test_post_requires_pg_trgm_and_known_operator_classes():
         "text_pattern_ops",
     )
     assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"
+
+
+def test_pre_rejects_same_named_canonical_check_with_wrong_definition():
+    result = _evaluate(
+        mode="pre",
+        schema_checks={"short_links": {"ck_short_links_short_code_canonical": "true"}},
+    )
+    assert result["status"] == "error"
+    assert result["error_code"] == "check_definition_mismatch"
+
+
+@pytest.mark.parametrize("mode", ("pre", "post"))
+def test_cli_rejects_same_named_canonical_check_with_wrong_definition(
+    migration_database_url, mode
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE short_links DROP CONSTRAINT "
+                    "ck_short_links_short_code_canonical"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE short_links ADD CONSTRAINT "
+                    "ck_short_links_short_code_canonical CHECK (true)"
+                )
+            )
+    finally:
+        engine.dispose()
+    result = _run_schema_check(migration_database_url, mode)
+    assert result.returncode == 1
+    assert _public_json(result, migration_database_url)["error_code"] == "check_definition_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_code"),
+    [
+        ("DROP CONSTRAINT fk_access_logs_domain", "access_log_foreign_key_missing"),
+        (
+            "RENAME CONSTRAINT fk_access_logs_domain TO fk_access_logs_domain_drift",
+            "access_log_foreign_key_missing",
+        ),
+        (
+            "DROP CONSTRAINT fk_access_logs_domain; "
+            "ADD CONSTRAINT fk_access_logs_domain FOREIGN KEY (domain_id) "
+            "REFERENCES domains(id) ON DELETE CASCADE",
+            "access_log_foreign_key_mismatch",
+        ),
+    ],
+)
+def test_cli_pre_rejects_phase_four_access_log_fk_drift(
+    migration_database_url, mutation, error_code
+):
+    run_alembic(migration_database_url, "upgrade", "a73f0b9d4216")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            for statement in mutation.split("; "):
+                connection.execute(text(f"ALTER TABLE access_logs {statement}"))
+    finally:
+        engine.dispose()
+    result = _run_schema_check(migration_database_url, "pre")
+    assert result.returncode == 1
+    assert _public_json(result, migration_database_url)["error_code"] == error_code
     operator_classes = _ready_operator_classes()
     operator_classes["short_links"]["idx_short_links_name_trgm"] = ("text_ops",)
     assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"

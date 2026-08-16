@@ -196,7 +196,9 @@ class ShortLinkCreate(BaseModel):
     @field_validator("custom_alias", mode="before")
     @classmethod
     def normalize_custom_alias(cls, value: object) -> object:
-        return normalize_short_code(value) if isinstance(value, str) else value
+        if not isinstance(value, str):
+            return value
+        return normalize_short_code(value)
 
 
 class ShortLinkUpdate(BaseModel):
