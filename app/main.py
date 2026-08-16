@@ -21,6 +21,7 @@ from app.features.short_links.router import router as short_links_router
 from app.features.users.router import router as users_router
 from app.features.redirect.router import router as redirect_router
 from app.integrations import redis as redis_integration
+from app.integrations.maxmind.insights import MaxMindInsightsClient
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -52,10 +53,23 @@ async def lifespan(app: FastAPI):
     else:
         r = None
         app.state.redis = None
-    yield
-    if r:
-        await redis_integration.close_redis_client(r)
-    app.state.redis = None
+    insights = None
+    if settings.maxmind_insights_enabled:
+        insights = MaxMindInsightsClient(
+            account_id=settings.maxmind_account_id,
+            license_key=settings.maxmind_license_key,
+            timeout=settings.maxmind_timeout_seconds,
+        )
+    app.state.maxmind_insights = insights
+    try:
+        yield
+    finally:
+        if insights is not None:
+            await insights.close()
+        app.state.maxmind_insights = None
+        if r:
+            await redis_integration.close_redis_client(r)
+        app.state.redis = None
 
 
 app = FastAPI(title="Short URL Service", lifespan=lifespan)

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "DEBUG"
     trust_proxy_headers: bool = False
+    maxmind_insights_enabled: bool = False
+    maxmind_account_id: int | None = None
+    maxmind_license_key: str | None = None
+    maxmind_timeout_seconds: float = 1.5
+
+    @field_validator("maxmind_account_id", mode="before")
+    @classmethod
+    def normalize_blank_maxmind_account_id(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -49,13 +60,28 @@ class Settings(BaseSettings):
             raise ValueError("; ".join(errors))
         return self
 
-    def public_summary(self) -> dict[str, str | bool]:
+    @model_validator(mode="after")
+    def validate_maxmind_insights(self):
+        if self.maxmind_timeout_seconds <= 0:
+            raise ValueError("MAXMIND_TIMEOUT_SECONDS must be greater than zero")
+        if self.maxmind_insights_enabled and (
+            self.maxmind_account_id is None or not (self.maxmind_license_key or "").strip()
+        ):
+            raise ValueError(
+                "MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY are required when "
+                "MAXMIND_INSIGHTS_ENABLED is true"
+            )
+        return self
+
+    def public_summary(self) -> dict[str, str | bool | float]:
         return {
             "app_env": self.app_env,
             "cookie_secure": self.cookie_secure,
             "cors_origins": self.cors_origins,
             "log_level": self.log_level,
             "trust_proxy_headers": self.trust_proxy_headers,
+            "maxmind_insights_enabled": self.maxmind_insights_enabled,
+            "maxmind_timeout_seconds": self.maxmind_timeout_seconds,
         }
 
 

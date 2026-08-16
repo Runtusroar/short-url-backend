@@ -34,6 +34,10 @@ def test_env_example_contains_runtime_and_compose_contract():
         "CORS_ORIGINS",
         "LOG_LEVEL",
         "TRUST_PROXY_HEADERS",
+        "MAXMIND_INSIGHTS_ENABLED",
+        "MAXMIND_ACCOUNT_ID",
+        "MAXMIND_LICENSE_KEY",
+        "MAXMIND_TIMEOUT_SECONDS",
     } <= env_keys()
 
 
@@ -43,6 +47,15 @@ def test_compose_ports_are_loopback_only():
     assert '"127.0.0.1:${REDIS_PORT:-16379}:6379"' in compose
     assert '"127.0.0.1:${APP_PORT:-18000}:8000"' in compose
     assert "postgresql+asyncpg" not in compose
+
+
+def test_compose_passes_maxmind_credentials_only_as_environment():
+    compose = (ROOT / "docker-compose.yml").read_text()
+
+    assert "MAXMIND_INSIGHTS_ENABLED: ${MAXMIND_INSIGHTS_ENABLED:-false}" in compose
+    assert "MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}" in compose
+    assert "MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}" in compose
+    assert "MAXMIND_TIMEOUT_SECONDS: ${MAXMIND_TIMEOUT_SECONDS:-1.5}" in compose
 
 
 def test_makefile_has_one_environment_agnostic_entrypoint():

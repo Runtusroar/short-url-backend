@@ -28,6 +28,53 @@ def test_dev_settings_parse_cors_origins():
     ]
 
 
+def test_maxmind_insights_is_disabled_by_default_and_blank_account_id_is_none():
+    settings = make_settings(maxmind_account_id="", maxmind_license_key="")
+
+    assert settings.maxmind_insights_enabled is False
+    assert settings.maxmind_account_id is None
+    assert settings.maxmind_license_key == ""
+    assert settings.maxmind_timeout_seconds == 1.5
+
+
+def test_maxmind_insights_enabled_requires_credentials():
+    with pytest.raises(ValidationError, match="MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY"):
+        make_settings(maxmind_insights_enabled=True, maxmind_account_id=123)
+
+
+def test_maxmind_insights_enabled_accepts_nonblank_credentials():
+    settings = make_settings(
+        maxmind_insights_enabled=True,
+        maxmind_account_id=123,
+        maxmind_license_key="license-key",
+        maxmind_timeout_seconds=2.5,
+    )
+
+    assert settings.maxmind_account_id == 123
+    assert settings.maxmind_license_key == "license-key"
+    assert settings.maxmind_timeout_seconds == 2.5
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_maxmind_insights_requires_positive_timeout(timeout):
+    with pytest.raises(ValidationError, match="MAXMIND_TIMEOUT_SECONDS must be greater than zero"):
+        make_settings(maxmind_timeout_seconds=timeout)
+
+
+def test_public_summary_redacts_maxmind_credentials():
+    settings = make_settings(
+        maxmind_insights_enabled=True,
+        maxmind_account_id=123,
+        maxmind_license_key="do-not-log-this",
+    )
+
+    assert settings.public_summary()["maxmind_insights_enabled"] is True
+    assert settings.public_summary()["maxmind_timeout_seconds"] == 1.5
+    assert "maxmind_account_id" not in settings.public_summary()
+    assert "maxmind_license_key" not in settings.public_summary()
+    assert "do-not-log-this" not in settings.public_summary().values()
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -90,4 +137,6 @@ def test_prod_accepts_safe_configuration():
         "cors_origins": "https://admin.example.com",
         "log_level": "INFO",
         "trust_proxy_headers": True,
+        "maxmind_insights_enabled": False,
+        "maxmind_timeout_seconds": 1.5,
     }
