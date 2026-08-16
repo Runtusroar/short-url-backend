@@ -23,7 +23,12 @@ from app.models.base import now_utc
 class AccessLog(Base):
     __tablename__ = "access_logs"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     short_link_id = Column(UUID(as_uuid=True), ForeignKey("short_links.id", name="fk_access_logs_short_link", ondelete="RESTRICT"), nullable=False)
     domain_id = Column(UUID(as_uuid=True), ForeignKey("domains.id", name="fk_access_logs_domain", ondelete="RESTRICT"), nullable=False)
     target_url_id = Column(UUID(as_uuid=True), ForeignKey("target_urls.id", name="fk_access_logs_target_url", ondelete="SET NULL"), nullable=True)

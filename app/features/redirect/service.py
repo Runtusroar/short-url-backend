@@ -115,6 +115,7 @@ async def get_redirect_target(
                 AccessRule.is_active == True,
             )
             .order_by(AccessRule.priority, AccessRule.id)
+            .with_for_update(key_share=True)
         )
         rules = result.scalars().all()
         action, matched_rule = evaluate_rules(
@@ -142,7 +143,7 @@ async def get_redirect_target(
             TargetUrl.url_type == url_type,
             TargetUrl.is_active == True,
             TargetUrl.weight > 0,
-        )
+        ).with_for_update(key_share=True)
     )
     urls = result.scalars().all()
     target = weighted_random_choice(urls)

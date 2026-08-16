@@ -9,12 +9,18 @@ from app.models import Domain, User, UserDomain
 
 
 def get_request_host(request: Request) -> str:
-    host = request.headers.get("host", "localhost")
-    return host.split(":")[0].lower()
+    host = request.headers.get("host", "localhost").strip()
+    if host.startswith("["):
+        closing = host.find("]")
+        if closing >= 0:
+            host = host[1:closing]
+    elif host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    return host.rstrip(".").lower()
 
 
 async def get_current_domain(
-    request: Request, db: AsyncSession = Depends(get_db)
+    request: Request, db: AsyncSession = Depends(get_db)  # noqa: B008
 ) -> Domain:
     host = get_request_host(request)
     result = await db.execute(
@@ -45,9 +51,9 @@ async def has_domain_access(user: User, domain_id, db: AsyncSession) -> bool:
 
 
 async def require_domain_access(
-    current_user: User = Depends(get_current_user),
-    current_domain: Domain = Depends(get_current_domain),
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    current_domain: Domain = Depends(get_current_domain),  # noqa: B008
+    db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
     if not await has_domain_access(current_user, current_domain.id, db):
         raise PermissionDeniedError("无权访问该域名")

@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from tests.migrations.support import run_alembic
 
@@ -305,6 +306,37 @@ def test_access_log_representable_round_trip_restores_legacy_columns_and_default
                 "idx_access_logs_plus8",
                 "idx_access_logs_dedup",
             } <= indexes
+            foreign_keys = {
+                foreign_key["constrained_columns"][0]: foreign_key
+                for foreign_key in inspect(engine).get_foreign_keys("access_logs")
+            }
+            assert foreign_keys["short_link_id"]["options"]["ondelete"] == "RESTRICT"
+            assert connection.scalar(text("SELECT count(*) FROM access_logs")) == 2
+            with pytest.raises(IntegrityError):
+                connection.execute(text("DELETE FROM short_links WHERE id = :id"), {"id": link_id})
+    finally:
+        engine.dispose()
+
+
+def test_access_log_upgrade_rejects_unsafe_timezone_before_writing(migration_database_url):
+    run_alembic(migration_database_url, "upgrade", BASE_REVISION)
+    engine = create_engine(migration_database_url)
+    unsafe_timezone = "/unsafe/zone"
+    try:
+        with engine.begin() as connection:
+            user_id = _seed_user(connection, "unsafe-zone")
+            domain_id, _, _ = _seed_domain_link_and_target(
+                connection, timezone="Asia/Shanghai", suffix="unsafe-zone", user_id=user_id
+            )
+            connection.execute(text("UPDATE domains SET timezone = :timezone WHERE id = :id"), {"timezone": unsafe_timezone, "id": domain_id})
+        with pytest.raises(CalledProcessError) as exc_info:
+            run_alembic(migration_database_url, "upgrade", REVISION)
+        output = f"{exc_info.value.stdout}\n{exc_info.value.stderr}"
+        assert "access log domain timezone invariant" in output
+        assert unsafe_timezone not in output
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == BASE_REVISION
+            assert connection.scalar(text("SELECT count(*) FROM information_schema.columns WHERE table_name = 'access_logs' AND column_name = 'client_ip'")) == 0
     finally:
         engine.dispose()
 

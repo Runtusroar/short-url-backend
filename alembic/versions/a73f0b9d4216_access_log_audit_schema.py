@@ -48,7 +48,7 @@ def _validate_legacy_facts() -> None:
     for value in op.get_bind().execute(sa.text("SELECT timezone FROM domains")).scalars():
         try:
             ZoneInfo(value)
-        except (TypeError, ZoneInfoNotFoundError):
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
             invalid_timezones += 1
     if invalid_timezones:
         raise RuntimeError(f"access log domain timezone invariant violated: {invalid_timezones}")
@@ -185,7 +185,8 @@ def downgrade() -> None:
     ):
         op.drop_constraint(name, "access_logs", type_="check")
     op.drop_constraint("fk_access_logs_matched_rule", "access_logs", type_="foreignkey")
-    _replace_foreign_key("short_link_id", "access_logs_short_link_id_fkey", "short_links", "CASCADE")
+    # Logs remain append-only across every supported downgrade path.
+    _replace_foreign_key("short_link_id", "fk_access_logs_short_link", "short_links", "RESTRICT")
     _replace_foreign_key("domain_id", "fk_access_logs_domain", "domains", None)
     _replace_foreign_key("target_url_id", "fk_access_logs_target_url", "target_urls", "SET NULL")
     op.alter_column("access_logs", "country", existing_type=sa.CHAR(length=2), type_=sa.String(length=8), postgresql_using="country::varchar(8)")

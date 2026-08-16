@@ -1,11 +1,10 @@
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from sqlalchemy import create_engine, inspect
-
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -19,6 +18,20 @@ EXPECTED_INDEXES = {
         "idx_access_logs_domain_result_accessed_at": ("domain_id", "result", "accessed_at"),
         "idx_access_logs_domain_country_accessed_at": ("domain_id", "country", "accessed_at"),
     },
+}
+EXPECTED_INDEX_SORTING = {
+    "idx_access_logs_domain_accessed_at": {"accessed_at": ("desc",)},
+    "idx_access_logs_link_accessed_at": {"accessed_at": ("desc",)},
+    "idx_access_logs_link_access_date": {"access_date": ("desc",)},
+    "idx_access_logs_link_client_ip_dedup": {},
+    "idx_access_logs_domain_result_accessed_at": {"accessed_at": ("desc",)},
+    "idx_access_logs_domain_country_accessed_at": {"accessed_at": ("desc",)},
+}
+EXPECTED_ONDELETE = {
+    "short_link_id": "RESTRICT",
+    "domain_id": "RESTRICT",
+    "target_url_id": "SET NULL",
+    "matched_rule_id": "SET NULL",
 }
 TARGET_TABLES = set(EXPECTED_INDEXES)
 CURRENT_APPLICATION_TABLES = {
@@ -61,6 +74,8 @@ def evaluate_schema(
     indexes: dict[str, dict[str, tuple[str, ...]]],
     target_url_ondelete: str | None,
     index_uniqueness: dict[str, dict[str, bool | None]] | None = None,
+    index_sorting: dict[str, dict[str, dict[str, tuple[str, ...]] | None]] | None = None,
+    foreign_key_actions: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
     """Evaluate inspected schema facts without opening a database connection.
 
@@ -152,6 +167,17 @@ def evaluate_schema(
                     indexes="invalid",
                     target_url_ondelete=normalized_ondelete,
                 )
+            if index_sorting is not None:
+                sorting = index_sorting.get(table_name, {}).get(index_name)
+                if sorting != EXPECTED_INDEX_SORTING[index_name]:
+                    return _error(
+                        mode=mode,
+                        error_code="index_sorting_mismatch",
+                        detail=identifier,
+                        schema="drifted",
+                        indexes="invalid",
+                        target_url_ondelete=normalized_ondelete,
+                    )
 
     if mode == "post" and missing_indexes:
         return _error(
@@ -172,6 +198,18 @@ def evaluate_schema(
             indexes="missing" if missing_indexes else "valid",
             target_url_ondelete=normalized_ondelete,
         )
+
+    if mode == "post" and foreign_key_actions is not None:
+        for column, expected in EXPECTED_ONDELETE.items():
+            if foreign_key_actions.get(column) != expected:
+                return _error(
+                    mode=mode,
+                    error_code="access_log_foreign_key_mismatch",
+                    detail=f"access_logs.{column}",
+                    schema="drifted",
+                    indexes="missing" if missing_indexes else "valid",
+                    target_url_ondelete=normalized_ondelete,
+                )
 
     if missing_indexes or normalized_ondelete != "SET NULL":
         return {
@@ -197,7 +235,8 @@ def inspect_schema(
     set[str],
     dict[str, dict[str, tuple[str, ...]]],
     dict[str, dict[str, bool | None]],
-    str | None,
+    dict[str, dict[str, dict[str, tuple[str, ...]] | None]],
+    dict[str, str | None],
 ]:
     engine = create_engine(database_url)
     try:
@@ -205,10 +244,12 @@ def inspect_schema(
         tables = set(inspector.get_table_names())
         indexes: dict[str, dict[str, tuple[str, ...]]] = {}
         uniqueness: dict[str, dict[str, bool | None]] = {}
+        sorting: dict[str, dict[str, dict[str, tuple[str, ...]] | None]] = {}
 
         for table_name, expected_by_name in EXPECTED_INDEXES.items():
             indexes[table_name] = {}
             uniqueness[table_name] = {}
+            sorting[table_name] = {}
             if table_name not in tables:
                 continue
             for index in inspector.get_indexes(table_name):
@@ -222,17 +263,23 @@ def inspect_schema(
                 uniqueness[table_name][index_name] = (
                     unique if isinstance(unique, bool) else None
                 )
+                raw_sorting = index.get("column_sorting")
+                sorting[table_name][index_name] = (
+                    {key: tuple(value) for key, value in raw_sorting.items()}
+                    if isinstance(raw_sorting, dict)
+                    else {}
+                )
 
-        target_url_ondelete = None
+        foreign_key_actions: dict[str, str | None] = {}
         if "access_logs" in tables:
             for foreign_key in inspector.get_foreign_keys("access_logs"):
-                if foreign_key.get("constrained_columns") != ["target_url_id"]:
+                columns = foreign_key.get("constrained_columns")
+                if not isinstance(columns, list) or len(columns) != 1:
                     continue
                 ondelete = foreign_key.get("options", {}).get("ondelete")
-                target_url_ondelete = ondelete.upper() if ondelete else None
-                break
+                foreign_key_actions[columns[0]] = ondelete.upper() if ondelete else None
 
-        return tables, indexes, uniqueness, target_url_ondelete
+        return tables, indexes, uniqueness, sorting, foreign_key_actions
     finally:
         engine.dispose()
 
@@ -260,15 +307,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         from app.core.config import settings
 
-        tables, indexes, uniqueness, ondelete = inspect_schema(settings.database_url)
+        tables, indexes, uniqueness, sorting, foreign_key_actions = inspect_schema(settings.database_url)
         result = evaluate_schema(
             mode=parsed.mode,
             tables=tables,
             indexes=indexes,
-            target_url_ondelete=ondelete,
+            target_url_ondelete=foreign_key_actions.get("target_url_id"),
             index_uniqueness=uniqueness,
+            index_sorting=sorting,
+            foreign_key_actions=foreign_key_actions,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         result = {
             "mode": parsed.mode,
             "status": "error",
