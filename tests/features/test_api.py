@@ -3,13 +3,14 @@
 import uuid
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.features.short_links.schemas import ShortLinkCreate
+from app.main import app
 from tests.conftest import _sync_engine
 
 # ---------------------------------------------------------------------------
@@ -1401,3 +1402,39 @@ async def test_redirect_ignores_expired_or_removed_blacklist_entries(
         follow_redirects=False,
     )
     assert removed_response.status_code == 302
+
+
+@pytest.mark.parametrize(
+    ("trust_proxy_headers", "real_ip"),
+    [(False, "198.51.100.7"), (True, "not-an-ip")],
+)
+async def test_public_redirect_allows_unknown_client_ip_without_database_cast(
+    client,
+    admin_token,
+    default_domain,
+    monkeypatch,
+    trust_proxy_headers,
+    real_ip,
+):
+    monkeypatch.setattr(settings, "trust_proxy_headers", trust_proxy_headers)
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_allow_rule(client, admin_token, link["id"])
+    await _add_target_url(
+        client, admin_token, link["id"], "https://unknown-ip.example.com"
+    )
+
+    transport = ASGITransport(app=app, client=None)
+    async with AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as unknown_client:
+        response = await unknown_client.get(
+            f"/{link['short_code']}",
+            headers={
+                **_host(),
+                "X-Real-IP": real_ip,
+                "X-Forwarded-For": "not-an-ip",
+            },
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://unknown-ip.example.com"

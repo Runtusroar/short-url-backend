@@ -1,4 +1,5 @@
 import fnmatch
+import ipaddress
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -150,11 +151,15 @@ async def get_redirect_target(
     return RedirectDecision(redirect_result, reason, matched_rule, target)
 
 
-async def is_blacklisted(db: AsyncSession, ip: str) -> bool:
+async def is_blacklisted(db: AsyncSession, ip: str | None) -> bool:
+    try:
+        canonical_ip = str(ipaddress.ip_address(ip))
+    except (TypeError, ValueError):
+        return False
     now = datetime.now(UTC)
     result = await db.execute(
         select(IpBlacklist).where(
-            IpBlacklist.ip == cast(ip, INET),
+            IpBlacklist.ip == cast(canonical_ip, INET),
             IpBlacklist.removed_at.is_(None),
             or_(IpBlacklist.expires_at.is_(None), IpBlacklist.expires_at > now),
         )

@@ -36,13 +36,16 @@ async def add_to_blacklist(
     db: AsyncSession, payload: IpBlacklistCreate, current_user: User
 ) -> IpBlacklist:
     canonical_ip = str(payload.ip)
-    now = datetime.now(UTC)
     existing = (
         await db.execute(
-            select(IpBlacklist).where(IpBlacklist.ip == cast(canonical_ip, INET))
+            select(IpBlacklist)
+            .where(IpBlacklist.ip == cast(canonical_ip, INET))
+            .with_for_update()
         )
     ).scalar_one_or_none()
+    now = datetime.now(UTC)
     if existing and _is_active(existing, now):
+        await db.rollback()
         raise ConflictError("该 IP 已在黑名单中")
 
     if existing is None:
@@ -80,6 +83,8 @@ async def remove_from_blacklist(
     entry = result.scalar_one_or_none()
     if not entry:
         raise NotFoundError("黑名单记录")
+    if entry.removed_at is not None:
+        return
     entry.removed_at = datetime.now(UTC)
     entry.removed_by = current_user.id
     entry.removal_reason = DEFAULT_REMOVAL_REASON
