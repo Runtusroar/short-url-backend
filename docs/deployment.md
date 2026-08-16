@@ -63,12 +63,12 @@ make create-admin u=admin p='replace-with-a-strong-password'
 ```
 
 `make migrate` first performs a read-only schema preflight, applies every
-pending Alembic revision, and then runs a postflight that requires the repaired
-indexes and `access_logs.target_url_id ON DELETE SET NULL`. The preflight allows
-an empty database and historical states that the migration chain can repair,
-but rejects conflicting same-named index definitions. If it reports schema
-drift, investigate and correct the reported database object; do not bypass the
-check or use `alembic stamp` to hide the mismatch.
+pending Alembic revision, and then runs a postflight that requires every final
+Phase 4 index plus the explicit `access_logs` delete actions. The preflight
+allows an empty database and historical states that the migration chain can
+repair, but rejects conflicting same-named final index definitions. If it
+reports schema drift, investigate and correct the reported database object; do
+not bypass the check or use `alembic stamp` to hide the mismatch.
 
 Install an Nginx server block for the short-link hostname. The certificate paths
 below are examples; use the paths for the certificate already issued to this
@@ -123,8 +123,8 @@ curl -I https://go.example.com/example-code \
 
 In a separate terminal, run `make logs` and confirm the matching Uvicorn access
 entry and its response status. Uvicorn access output does not contain the stored
-client IP, full user agent, referer, result, or domain association. Query the
-current database record to verify those fields:
+client IP, full user agent, referer, decision, request host/method, or proxy
+facts. Query the current database record to verify the persisted request facts:
 
 ```bash
 docker compose exec db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
@@ -135,10 +135,17 @@ Then run this query in `psql`:
 ```sql
 SELECT
     d.name AS configured_domain,
-    a.ip AS client_ip,
-    a.ua_string AS user_agent,
+    host(a.client_ip) AS client_ip,
+    a.user_agent,
     a.referer,
     a.result,
+    a.decision_reason,
+    a.request_host,
+    a.request_method,
+    a.proxy_check_status,
+    a.is_anonymous,
+    a.proxy_types,
+    a.proxy_source,
     a.accessed_at
 FROM access_logs AS a
 JOIN domains AS d ON d.id = a.domain_id
@@ -148,10 +155,11 @@ ORDER BY a.accessed_at DESC
 LIMIT 1;
 ```
 
-Confirm the client IP, recognizable user agent and referer, expected result, and
-that `configured_domain` identifies `go.example.com`. Raw request `Host` is not
-stored in the current schema, so defer verification of the raw header until a
-later schema field records it.
+Confirm the client IP, recognizable user agent and referer, expected result and
+decision, persisted `request_host`/`request_method`, and the proxy-status facts.
+Also confirm that `configured_domain` identifies `go.example.com`. These fields
+are stored request facts for the redirect; they are separate from the Uvicorn
+access line.
 
 Use `make up` for normal deployments and updates. `make restart` validates
 configuration and force-recreates the app container, so `.env` changes take

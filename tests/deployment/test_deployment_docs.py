@@ -46,7 +46,9 @@ def test_rollback_rebuilds_previous_commit_before_starting_services():
 def test_production_requires_nondevelopment_service_credentials():
     text = DOC.read_text()
     compact = " ".join(text.split())
-    assert "`DATABASE_URL` and `REDIS_URL` are mandatory and must be non-empty" in compact
+    assert (
+        "`DATABASE_URL` and `REDIS_URL` are mandatory and must be non-empty" in compact
+    )
     assert "Replace `.env.example`'s development PostgreSQL credentials" in compact
     assert "strong, unique `POSTGRES_PASSWORD`" in compact
     assert (
@@ -66,17 +68,24 @@ def test_restart_recreates_app_after_config_validation():
     assert "Use `make up` for normal deployments and updates" in text
 
 
-def test_verification_distinguishes_access_output_from_stored_request_data():
+def test_verification_distinguishes_access_output_from_persisted_request_facts():
     text = DOC.read_text()
     compact = " ".join(text.split())
     assert "Uvicorn access entry and its response status" in compact
     for field in (
         "d.name AS configured_domain",
-        "a.ip AS client_ip",
-        "a.ua_string AS user_agent",
+        "host(a.client_ip) AS client_ip",
+        "a.user_agent",
         "a.referer",
         "a.result",
+        "a.decision_reason",
+        "a.request_host",
+        "a.request_method",
+        "a.proxy_check_status",
+        "a.is_anonymous",
+        "a.proxy_types",
+        "a.proxy_source",
     ):
         assert field in text
-    assert "Raw request `Host` is not stored" in compact
-    assert "application log that the entry records the expected `Host`" not in compact
+    assert "persisted request facts" in compact
+    assert "stored request facts" in compact

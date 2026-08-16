@@ -39,21 +39,31 @@ def _validated_database_name(database_name: str) -> str:
 @contextmanager
 def disposable_migration_database():
     """Yield a validated disposable PostgreSQL database URL for migration tests."""
-    configured_url = make_url(settings.database_url).set(drivername="postgresql+psycopg")
+    configured_url = make_url(settings.database_url).set(
+        drivername="postgresql+psycopg"
+    )
     database_name = f"{DATABASE_PREFIX}{uuid.uuid4().hex}"
     _validated_database_name(database_name)
     admin_url = configured_url.set(drivername="postgresql", database="postgres")
     disposable_url = configured_url.set(database=database_name)
     admin_dsn = admin_url.render_as_string(hide_password=False)
 
-    with psycopg.connect(admin_dsn, autocommit=True) as admin_connection, admin_connection.cursor() as cursor:
-        cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
+    with (
+        psycopg.connect(admin_dsn, autocommit=True) as admin_connection,
+        admin_connection.cursor() as cursor,
+    ):
+        cursor.execute(
+            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+        )
 
     try:
         yield disposable_url.render_as_string(hide_password=False)
     finally:
         validated_name = _validated_database_name(database_name)
-        with psycopg.connect(admin_dsn, autocommit=True) as admin_connection, admin_connection.cursor() as cursor:
+        with (
+            psycopg.connect(admin_dsn, autocommit=True) as admin_connection,
+            admin_connection.cursor() as cursor,
+        ):
             cursor.execute(
                 """
                 SELECT pg_terminate_backend(pid)
@@ -69,9 +79,7 @@ def disposable_migration_database():
             )
 
 
-def run_alembic(
-    database_url: str, *arguments: str
-) -> subprocess.CompletedProcess[str]:
+def run_alembic(database_url: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     return subprocess.run(
@@ -92,6 +100,98 @@ def get_indexes(database_url: str, table_name: str) -> dict[str, tuple[str, ...]
             index["name"]: tuple(index["column_names"])
             for index in inspect(engine).get_indexes(table_name)
             if index["name"] in expected_names
+        }
+    finally:
+        engine.dispose()
+
+
+def _normalized_predicate(value: object) -> str | None:
+    """Return comparable PostgreSQL partial-index text without formatting noise."""
+    if not isinstance(value, str):
+        return None
+    return " ".join(value.strip().removeprefix("(").removesuffix(")").split())
+
+
+def get_schema_contract(database_url: str) -> dict[str, object]:
+    """Inspect all final-schema facts used by migration-path contract tests.
+
+    Unlike ``get_indexes``, this deliberately does not filter index names: a
+    final-schema test needs to detect both missing required objects and stale
+    transitional objects.
+    """
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        tables = set(inspector.get_table_names())
+        indexes: dict[str, dict[str, dict[str, object]]] = {}
+        columns: dict[str, dict[str, dict[str, object]]] = {}
+        checks: dict[str, dict[str, str]] = {}
+        foreign_keys: dict[str, dict[str, dict[str, object]]] = {}
+
+        for table_name in tables:
+            indexes[table_name] = {}
+            for index in inspector.get_indexes(table_name):
+                name = index.get("name")
+                if not isinstance(name, str):
+                    continue
+                raw_sorting = index.get("column_sorting")
+                sorting = (
+                    {column: tuple(values) for column, values in raw_sorting.items()}
+                    if isinstance(raw_sorting, dict)
+                    else {}
+                )
+                dialect_options = index.get("dialect_options")
+                predicate = (
+                    _normalized_predicate(dialect_options.get("postgresql_where"))
+                    if isinstance(dialect_options, dict)
+                    else None
+                )
+                indexes[table_name][name] = {
+                    "columns": tuple(index.get("column_names") or ()),
+                    "unique": index.get("unique")
+                    if isinstance(index.get("unique"), bool)
+                    else None,
+                    "sorting": sorting,
+                    "predicate": predicate,
+                }
+
+            columns[table_name] = {
+                column["name"]: {
+                    "type": str(column["type"]),
+                    "timezone": getattr(column["type"], "timezone", None),
+                    "nullable": column["nullable"],
+                    "default": column.get("default"),
+                }
+                for column in inspector.get_columns(table_name)
+            }
+            checks[table_name] = {
+                check["name"]: check["sqltext"]
+                for check in inspector.get_check_constraints(table_name)
+                if isinstance(check.get("name"), str)
+                and isinstance(check.get("sqltext"), str)
+            }
+            foreign_keys[table_name] = {
+                foreign_key["name"]: {
+                    "columns": tuple(foreign_key.get("constrained_columns") or ()),
+                    "referred_table": foreign_key.get("referred_table"),
+                    "referred_columns": tuple(
+                        foreign_key.get("referred_columns") or ()
+                    ),
+                    "ondelete": (
+                        foreign_key.get("options", {}).get("ondelete") or ""
+                    ).upper()
+                    or None,
+                }
+                for foreign_key in inspector.get_foreign_keys(table_name)
+                if isinstance(foreign_key.get("name"), str)
+            }
+
+        return {
+            "tables": tables,
+            "indexes": indexes,
+            "columns": columns,
+            "checks": checks,
+            "foreign_keys": foreign_keys,
         }
     finally:
         engine.dispose()

@@ -3,7 +3,8 @@ import uuid
 
 os.environ.setdefault("REDIS_URL", "")
 os.environ.setdefault(
-    "DATABASE_URL", "postgresql+psycopg://shorturl:shorturl@localhost:18543/shorturl_test"
+    "DATABASE_URL",
+    "postgresql+psycopg://shorturl:shorturl@localhost:18543/shorturl_test",
 )
 
 import pytest
@@ -39,8 +40,17 @@ def _insert_user(conn, user_id: uuid.UUID, username: str, password: str, role: s
 
 
 @pytest.fixture(scope="module", autouse=True)
-def setup_database():
+def setup_database(request: pytest.FixtureRequest):
     """Create a fresh test schema and seed base accounts."""
+    # Migration tests own isolated UUID-named databases and must never touch
+    # the application's shared test database as an incidental autouse effect.
+    if (
+        request.module.__name__.startswith("tests.migrations.")
+        or request.module.__name__ == "tests.deployment.test_schema_check"
+    ):
+        yield
+        return
+
     Base.metadata.drop_all(_sync_engine)
     Base.metadata.create_all(_sync_engine)
 

@@ -2,6 +2,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from app.models import AccessLog, ShortLink
+from tests.migrations.support import get_schema_contract, run_alembic
 
 EXPECTED = {
     "short_links": {
@@ -16,9 +17,21 @@ EXPECTED = {
         "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at"),
         "idx_access_logs_link_accessed_at": ("short_link_id", "accessed_at"),
         "idx_access_logs_link_access_date": ("short_link_id", "access_date"),
-        "idx_access_logs_link_client_ip_dedup": ("short_link_id", "client_ip", "dedup_bucket"),
-        "idx_access_logs_domain_result_accessed_at": ("domain_id", "result", "accessed_at"),
-        "idx_access_logs_domain_country_accessed_at": ("domain_id", "country", "accessed_at"),
+        "idx_access_logs_link_client_ip_dedup": (
+            "short_link_id",
+            "client_ip",
+            "dedup_bucket",
+        ),
+        "idx_access_logs_domain_result_accessed_at": (
+            "domain_id",
+            "result",
+            "accessed_at",
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "domain_id",
+            "country",
+            "accessed_at",
+        ),
     },
 }
 
@@ -30,9 +43,34 @@ def index_map(table):
     }
 
 
-def test_orm_declares_repaired_baseline_indexes():
+def test_orm_declares_final_phase_four_indexes():
     assert index_map(ShortLink.__table__) == EXPECTED["short_links"]
     assert index_map(AccessLog.__table__) == EXPECTED["access_logs"]
+
+
+def test_phase_three_revision_keeps_the_five_repaired_indexes(migration_database_url):
+    run_alembic(migration_database_url, "upgrade", "d6e8f0a21b35")
+    indexes = get_schema_contract(migration_database_url)["indexes"]
+    assert {
+        name: facts
+        for name, facts in indexes["short_links"].items()
+        if name == "idx_short_links_domain"
+    } == {
+        "idx_short_links_domain": {
+            "columns": ("domain_id",),
+            "unique": False,
+            "sorting": {},
+            "predicate": None,
+        }
+    }
+    assert {
+        name: facts["columns"] for name, facts in indexes["access_logs"].items()
+    } == {
+        "idx_access_logs_domain": ("domain_id",),
+        "idx_access_logs_short_link": ("short_link_id",),
+        "idx_access_logs_plus8": ("short_link_id", "accessed_at_plus8"),
+        "idx_access_logs_dedup": ("short_link_id", "ip", "dedup_bucket"),
+    }
 
 
 def test_target_url_foreign_key_remains_set_null():
