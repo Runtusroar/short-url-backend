@@ -7,6 +7,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.features.short_links.schemas import ShortLinkCreate
 from tests.conftest import _sync_engine
@@ -1323,8 +1324,12 @@ async def test_login_disabled_user(client, admin_token):
 # ---------------------------------------------------------------------------
 
 
-async def test_redirect_blacklisted_ip(client, admin_token, default_domain):
+async def test_redirect_blacklisted_ip(
+    client, admin_token, default_domain, monkeypatch
+):
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
     link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_allow_rule(client, admin_token, link["id"])
     await _add_target_url(
         client, admin_token, link["id"], "https://blocked.example.com"
     )
@@ -1337,8 +1342,62 @@ async def test_redirect_blacklisted_ip(client, admin_token, default_domain):
 
     resp = await client.get(
         f"/{link['short_code']}",
-        headers={**_host(), "X-Forwarded-For": "192.168.1.1"},
+        headers={**_host(), "X-Real-IP": "192.168.1.1"},
         follow_redirects=False,
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "PERMISSION_DENIED"
+
+
+async def test_redirect_ignores_expired_or_removed_blacklist_entries(
+    client, admin_token, default_domain, monkeypatch
+):
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    link = await _create_short_link(client, admin_token, default_domain["id"])
+    await _add_allow_rule(client, admin_token, link["id"])
+    await _add_target_url(
+        client, admin_token, link["id"], "https://allowed.example.com"
+    )
+    expired = await client.post(
+        "/api/ip-blacklist",
+        headers=_auth(admin_token),
+        json={
+            "ip": "192.168.1.2",
+            "reason": "short lived",
+            "expires_at": "2100-01-01T00:00:00+00:00",
+        },
+    )
+    assert expired.status_code == 200
+    with _sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ip_blacklist SET expires_at = now() - interval '1 second' "
+                "WHERE id = :id"
+            ),
+            {"id": expired.json()["id"]},
+        )
+
+    expired_response = await client.get(
+        f"/{link['short_code']}",
+        headers={**_host(), "X-Real-IP": "192.168.1.2"},
+        follow_redirects=False,
+    )
+    assert expired_response.status_code == 302
+
+    removed = await client.post(
+        "/api/ip-blacklist",
+        headers=_auth(admin_token),
+        json={"ip": "192.168.1.3", "reason": "removed entry"},
+    )
+    assert removed.status_code == 200
+    assert (
+        await client.delete(
+            f"/api/ip-blacklist/{removed.json()['id']}", headers=_auth(admin_token)
+        )
+    ).status_code == 200
+    removed_response = await client.get(
+        f"/{link['short_code']}",
+        headers={**_host(), "X-Real-IP": "192.168.1.3"},
+        follow_redirects=False,
+    )
+    assert removed_response.status_code == 302

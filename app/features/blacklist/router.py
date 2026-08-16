@@ -39,5 +39,5 @@ async def remove_from_blacklist(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_staff),
 ):
-    await remove_from_blacklist_workflow(db, entry_id)
+    await remove_from_blacklist_workflow(db, entry_id, current_user)
     return {"detail": "Removed"}

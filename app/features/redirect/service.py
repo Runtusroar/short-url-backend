@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
@@ -150,7 +151,14 @@ async def get_redirect_target(
 
 
 async def is_blacklisted(db: AsyncSession, ip: str) -> bool:
-    result = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == ip))
+    now = datetime.now(UTC)
+    result = await db.execute(
+        select(IpBlacklist).where(
+            IpBlacklist.ip == cast(ip, INET),
+            IpBlacklist.removed_at.is_(None),
+            or_(IpBlacklist.expires_at.is_(None), IpBlacklist.expires_at > now),
+        )
+    )
     return result.scalar_one_or_none() is not None
 
 
