@@ -1438,3 +1438,11 @@ async def test_public_redirect_allows_unknown_client_ip_without_database_cast(
         )
     assert response.status_code == 302
     assert response.headers["location"] == "https://unknown-ip.example.com"
+    logs = await client.get(
+        "/api/logs",
+        headers={**_auth(admin_token), **_host()},
+        params={"short_link_id": link["id"]},
+    )
+    assert logs.status_code == 200
+    assert logs.json()[0]["client_ip"] is None
+    assert logs.json()[0]["request_host"] == "test.local"

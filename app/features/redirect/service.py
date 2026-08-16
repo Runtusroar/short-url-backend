@@ -171,30 +171,46 @@ async def _log_access(
     db: AsyncSession,
     short_link: ShortLink,
     domain: Domain,
-    target: TargetUrl | None,
-    result: str,
-    ip: str,
+    decision: RedirectDecision,
+    client_ip: str,
     country: str | None,
-    ua_string: str | None,
+    user_agent: str | None,
     platform: str | None,
     referer: str | None,
+    request_host: str | None,
+    request_method: str,
 ):
     accessed_at = datetime.now(UTC)
-    plus8_date = accessed_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    access_date = accessed_at.astimezone(ZoneInfo(domain.timezone)).date()
     dedup_bucket = int(accessed_at.timestamp() // 30) * 30
+    try:
+        normalized_client_ip = str(ipaddress.ip_address(client_ip))
+    except (TypeError, ValueError):
+        normalized_client_ip = None
+    is_bot = platform == "bot"
     log = AccessLog(
         short_link_id=short_link.id,
         domain_id=domain.id,
-        target_url_id=target.id if target else None,
-        result=result,
-        ip=ip,
+        target_url_id=decision.target.id if decision.target else None,
+        matched_rule_id=decision.matched_rule.id if decision.matched_rule else None,
+        result=decision.result,
+        client_ip=normalized_client_ip,
         country=country,
-        ua_string=ua_string,
+        user_agent=user_agent,
         ua_platform=platform,
         referer=referer,
         accessed_at=accessed_at,
-        accessed_at_plus8=plus8_date,
+        access_date=access_date,
         dedup_bucket=dedup_bucket,
+        decision_reason=decision.reason,
+        matched_rule_name=decision.matched_rule.name if decision.matched_rule else None,
+        target_url_snapshot=decision.target.url if decision.target else None,
+        request_host=request_host,
+        request_method=request_method,
+        proxy_check_status="assumed_bot" if is_bot else "skipped",
+        is_anonymous=is_bot,
+        proxy_types=[],
+        proxy_source="assumed_bot" if is_bot else None,
     )
     db.add(log)
     await db.commit()
@@ -244,6 +260,8 @@ async def select_and_log_redirect(
     referer: str | None,
     blacklisted: bool,
     is_proxy: bool,
+    request_host: str | None,
+    request_method: str,
 ) -> RedirectDecision:
     decision = await get_redirect_target(
         db,
@@ -259,13 +277,14 @@ async def select_and_log_redirect(
         db,
         link,
         domain,
-        decision.target,
-        decision.result,
+        decision,
         ip,
         country,
         ua_string,
         platform,
         referer,
+        request_host,
+        request_method,
     )
     return decision
 
@@ -277,6 +296,7 @@ async def execute_redirect(
     client_ip: str,
     ua_string: str | None,
     referer: str | None,
+    request_method: str = "GET",
 ) -> str:
     domain, link = await resolve_domain_and_link(db, host, short_code)
     blacklisted = await is_blacklisted(db, client_ip)
@@ -295,6 +315,8 @@ async def execute_redirect(
         referer,
         blacklisted,
         is_proxy,
+        host,
+        request_method,
     )
 
     if not decision.target:

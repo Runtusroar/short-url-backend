@@ -8,12 +8,14 @@ from sqlalchemy import create_engine, inspect
 ROOT = Path(__file__).parents[2]
 
 BASELINE_INDEX_NAMES = {
-    "short_links": {"idx_short_links_domain"},
+    "short_links": set(),
     "access_logs": {
-        "idx_access_logs_domain",
-        "idx_access_logs_short_link",
-        "idx_access_logs_plus8",
-        "idx_access_logs_dedup",
+        "idx_access_logs_domain_accessed_at",
+        "idx_access_logs_link_accessed_at",
+        "idx_access_logs_link_access_date",
+        "idx_access_logs_link_client_ip_dedup",
+        "idx_access_logs_domain_result_accessed_at",
+        "idx_access_logs_domain_country_accessed_at",
     },
 }
 

@@ -218,12 +218,12 @@ async def daily_stats_for_links(
             select(
                 AccessLog.short_link_id,
                 func.count().label("total"),
-                func.count(distinct(AccessLog.ip)).label("unique_ips"),
+                func.count(distinct(AccessLog.client_ip)).label("unique_ips"),
             )
             .where(
                 AccessLog.short_link_id.in_(link_ids),
                 AccessLog.domain_id == current_domain.id,
-                AccessLog.accessed_at_plus8 == stats_date,
+                AccessLog.access_date == stats_date,
             )
             .group_by(AccessLog.short_link_id)
         )

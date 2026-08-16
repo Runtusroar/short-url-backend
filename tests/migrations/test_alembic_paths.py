@@ -6,12 +6,14 @@ from tests.migrations.support import (
 )
 
 EXPECTED_INDEXES = {
-    "short_links": {"idx_short_links_domain": ("domain_id",)},
+    "short_links": {},
     "access_logs": {
-        "idx_access_logs_domain": ("domain_id",),
-        "idx_access_logs_short_link": ("short_link_id",),
-        "idx_access_logs_plus8": ("short_link_id", "accessed_at_plus8"),
-        "idx_access_logs_dedup": ("short_link_id", "ip", "dedup_bucket"),
+        "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at"),
+        "idx_access_logs_link_accessed_at": ("short_link_id", "accessed_at"),
+        "idx_access_logs_link_access_date": ("short_link_id", "access_date"),
+        "idx_access_logs_link_client_ip_dedup": ("short_link_id", "client_ip", "dedup_bucket"),
+        "idx_access_logs_domain_result_accessed_at": ("domain_id", "result", "accessed_at"),
+        "idx_access_logs_domain_country_accessed_at": ("domain_id", "country", "accessed_at"),
     },
 }
 

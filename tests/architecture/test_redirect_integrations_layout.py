@@ -32,10 +32,11 @@ def test_redirect_service_exposes_one_request_workflow():
         "db",
         "host",
         "short_code",
-        "client_ip",
-        "ua_string",
-        "referer",
-    ]
+            "client_ip",
+            "ua_string",
+            "referer",
+            "request_method",
+        ]
 
 
 def test_redirect_router_only_translates_http_around_the_workflow():

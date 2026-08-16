@@ -279,7 +279,9 @@ class _RecordingSession:
 async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error(
     monkeypatch,
 ):
-    domain = Domain(id=uuid4(), name="test.local", is_active=True, is_default=True)
+    domain = Domain(
+        id=uuid4(), name="test.local", timezone="Asia/Shanghai", is_active=True, is_default=True
+    )
     link = ShortLink(
         id=uuid4(),
         domain_id=domain.id,
@@ -330,6 +332,7 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
             "203.0.113.9",
             "Googlebot/2.1 (+http://www.google.com/bot.html)",
             "https://source.example/path",
+            "HEAD",
         )
 
     assert raised.value.status_code == 403
@@ -352,14 +355,21 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
     assert log.domain_id == domain.id
     assert log.target_url_id is None
     assert log.result == "denied"
-    assert log.ip == "203.0.113.9"
+    assert log.client_ip == "203.0.113.9"
     assert log.country == "CN"
-    assert log.ua_string == "Googlebot/2.1 (+http://www.google.com/bot.html)"
+    assert log.user_agent == "Googlebot/2.1 (+http://www.google.com/bot.html)"
     assert log.ua_platform == "bot"
     assert log.referer == "https://source.example/path"
+    assert log.request_host == "test.local"
+    assert log.request_method == "HEAD"
+    assert log.decision_reason == "no_target"
+    assert log.matched_rule_id is None
+    assert log.matched_rule_name is None
+    assert log.target_url_snapshot is None
+    assert log.proxy_check_status == "assumed_bot"
+    assert log.is_anonymous is True
+    assert log.proxy_types == []
+    assert log.proxy_source == "assumed_bot"
     assert log.accessed_at.tzinfo is not None
-    assert (
-        log.accessed_at_plus8
-        == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
-    )
+    assert log.access_date == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
     assert log.dedup_bucket == int(log.accessed_at.timestamp() // 30) * 30

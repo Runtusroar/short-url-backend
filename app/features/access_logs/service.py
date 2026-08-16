@@ -1,5 +1,6 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,9 +68,9 @@ async def list_logs(
         query = query.where(AccessLog.short_link_id == short_link_id)
 
     if date_from:
-        query = query.where(AccessLog.accessed_at_plus8 >= date_from)
+        query = query.where(AccessLog.access_date >= date_from)
     if date_to:
-        query = query.where(AccessLog.accessed_at_plus8 <= date_to)
+        query = query.where(AccessLog.access_date <= date_to)
 
     query = query.order_by(AccessLog.accessed_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
@@ -91,18 +92,18 @@ async def daily_stats(
 
     result = await db.execute(
         select(
-            AccessLog.accessed_at_plus8.label("date"),
+            AccessLog.access_date.label("date"),
             func.count().label("total"),
             func.count().filter(AccessLog.result == "allowed").label("allowed"),
             func.count().filter(AccessLog.result.in_(["denied", "blocked"])).label("denied"),
-            func.count(distinct(AccessLog.ip)).label("unique_ips"),
+            func.count(distinct(AccessLog.client_ip)).label("unique_ips"),
         )
         .where(
             AccessLog.short_link_id == short_link_id,
             AccessLog.domain_id == effective_domain.id,
         )
-        .group_by(AccessLog.accessed_at_plus8)
-        .order_by(AccessLog.accessed_at_plus8.desc())
+        .group_by(AccessLog.access_date)
+        .order_by(AccessLog.access_date.desc())
     )
     return result.all()
 
@@ -117,21 +118,23 @@ async def daily_summary(
     effective_domain = await resolve_effective_domain(
         domain_id, current_user, current_domain, db
     )
-    start_date = date.today() - timedelta(days=days - 1)
+    start_date = datetime.now(ZoneInfo(effective_domain.timezone)).date() - timedelta(
+        days=days - 1
+    )
 
     result = await db.execute(
         select(
-            AccessLog.accessed_at_plus8.label("date"),
+            AccessLog.access_date.label("date"),
             func.count().label("total"),
             func.count().filter(AccessLog.result == "allowed").label("allowed"),
             func.count().filter(AccessLog.result.in_(["denied", "blocked"])).label("denied"),
-            func.count(distinct(AccessLog.ip)).label("unique_ips"),
+            func.count(distinct(AccessLog.client_ip)).label("unique_ips"),
         )
         .where(
             AccessLog.domain_id == effective_domain.id,
-            AccessLog.accessed_at_plus8 >= start_date,
+            AccessLog.access_date >= start_date,
         )
-        .group_by(AccessLog.accessed_at_plus8)
-        .order_by(AccessLog.accessed_at_plus8.asc())
+        .group_by(AccessLog.access_date)
+        .order_by(AccessLog.access_date.asc())
     )
     return result.all()

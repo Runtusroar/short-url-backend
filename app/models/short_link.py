@@ -53,7 +53,6 @@ class ShortLink(Base):
         UniqueConstraint("domain_id", "short_code", name="uq_domain_short_code"),
         CheckConstraint("default_action IN ('allow', 'deny')", name="ck_short_links_default_action"),
         CheckConstraint("deleted_by IS NULL OR deleted_at IS NOT NULL", name="ck_short_links_deleted_actor"),
-        Index("idx_short_links_domain", "domain_id"),
         Index("idx_short_links_domain_created_at", "domain_id", created_at.desc()),
         Index("idx_short_links_domain_owner_created_at", "domain_id", "owner_id", created_at.desc()),
     )

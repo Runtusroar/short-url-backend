@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +15,7 @@ router = APIRouter(tags=["redirect"])
 async def redirect(
     short_code: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     host = get_request_host(request)
     client_ip = get_client_ip(request)
@@ -26,6 +28,7 @@ async def redirect(
         client_ip,
         ua_string,
         referer,
+        request.method,
     )
 
     return Response(status_code=302, headers={"Location": target_url})

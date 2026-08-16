@@ -31,7 +31,21 @@ class RedirectResult(StrEnum):
 
 
 class DecisionReason(StrEnum):
+    LEGACY_UNKNOWN = "legacy_unknown"
     BLACKLIST = "blacklist"
     MATCHED_RULE = "matched_rule"
     DEFAULT_ACTION = "default_action"
     NO_TARGET = "no_target"
+
+
+class ProxyCheckStatus(StrEnum):
+    SKIPPED = "skipped"
+    CACHED = "cached"
+    CHECKED = "checked"
+    ASSUMED_BOT = "assumed_bot"
+    ERROR = "error"
+
+
+class ProxySource(StrEnum):
+    MAXMIND_INSIGHTS = "maxmind_insights"
+    ASSUMED_BOT = "assumed_bot"
