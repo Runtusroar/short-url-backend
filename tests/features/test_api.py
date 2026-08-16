@@ -1118,9 +1118,11 @@ async def test_logs_and_daily_stats(client, admin_token, default_domain):
         params={"short_link_id": link["id"]},
     )
     assert resp.status_code == 200
-    logs = resp.json()
-    assert len(logs) == 3
-    assert logs[0]["result"] == "allowed"
+    page = resp.json()
+    assert page["has_more"] is False
+    assert page["next_cursor"] is None
+    assert len(page["items"]) == 3
+    assert page["items"][0]["result"] == "allowed"
 
     resp = await client.get(
         "/api/logs/daily",
@@ -1507,5 +1509,5 @@ async def test_public_redirect_allows_unknown_client_ip_without_database_cast(
         params={"short_link_id": link["id"]},
     )
     assert logs.status_code == 200
-    assert logs.json()[0]["client_ip"] is None
-    assert logs.json()[0]["request_host"] == "test.local"
+    assert logs.json()["items"][0]["client_ip"] is None
+    assert logs.json()["items"][0]["request_host"] == "test.local"

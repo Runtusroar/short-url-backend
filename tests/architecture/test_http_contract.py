@@ -51,3 +51,13 @@ def test_public_http_route_contract_is_stable():
         if route.path not in {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
     }
     assert actual == EXPECTED_ROUTES
+
+
+def test_log_list_openapi_uses_cursor_and_does_not_advertise_offset():
+    operation = app.openapi()["paths"]["/api/logs"]["get"]
+    parameter_names = {parameter["name"] for parameter in operation["parameters"]}
+    assert "cursor" in parameter_names
+    assert "offset" not in parameter_names
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AccessLogPageResponse"
+    }

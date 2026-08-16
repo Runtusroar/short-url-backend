@@ -1,12 +1,31 @@
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, exists, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.features.access_logs.cursor import LogCursor, decode_cursor, encode_cursor
+from app.features.access_logs.query import AccessLogFilters
 from app.models import AccessLog, Domain, ShortLink, ShortLinkPermission, User
+from app.models.enums import UserRole
+
+
+@dataclass(frozen=True)
+class AccessLogListRow:
+    log: AccessLog
+    short_code: str
+    short_link_name: str
+
+
+@dataclass(frozen=True)
+class AccessLogPage:
+    items: tuple[AccessLogListRow, ...]
+    next_cursor: str | None
+    has_more: bool
 
 
 async def resolve_effective_domain(
@@ -50,31 +69,98 @@ async def list_logs(
     db: AsyncSession,
     current_user: User,
     current_domain: Domain,
-    short_link_id: UUID | None,
     domain_id: UUID | None,
-    date_from: date | None,
-    date_to: date | None,
+    filters: AccessLogFilters,
     limit: int,
-    offset: int,
-) -> list[AccessLog]:
+    cursor: str | None,
+) -> AccessLogPage:
+    if (
+        domain_id
+        and current_user.role != UserRole.ADMIN
+        and domain_id != current_domain.id
+    ):
+        raise PermissionDeniedError()
     effective_domain = await resolve_effective_domain(
         domain_id, current_user, current_domain, db
     )
-    query = select(AccessLog).where(AccessLog.domain_id == effective_domain.id)
-
-    if short_link_id:
-        if not await can_view_link(db, current_user, short_link_id):
+    if filters.short_link_id:
+        if not await can_view_link(db, current_user, filters.short_link_id):
             raise PermissionDeniedError()
-        query = query.where(AccessLog.short_link_id == short_link_id)
 
-    if date_from:
-        query = query.where(AccessLog.access_date >= date_from)
-    if date_to:
-        query = query.where(AccessLog.access_date <= date_to)
+    filter_digest = filters.digest_scope(effective_domain.id, current_user)
+    decoded_cursor = (
+        decode_cursor(cursor, filter_digest, settings.secret_key) if cursor else None
+    )
+    statement = (
+        select(AccessLog, ShortLink.short_code, ShortLink.name)
+        .join(ShortLink, ShortLink.id == AccessLog.short_link_id)
+        .where(
+            AccessLog.domain_id == effective_domain.id,
+            ShortLink.domain_id == effective_domain.id,
+        )
+    )
 
-    query = query.order_by(AccessLog.accessed_at.desc()).offset(offset).limit(limit)
-    result = await db.execute(query)
-    return result.scalars().all()
+    if current_user.role == UserRole.OPERATOR:
+        statement = statement.where(ShortLink.owner_id == current_user.id)
+    elif current_user.role == UserRole.CLIENT:
+        statement = statement.where(
+            exists().where(
+                ShortLinkPermission.short_link_id == ShortLink.id,
+                ShortLinkPermission.user_id == current_user.id,
+            )
+        )
+
+    if filters.short_link_id:
+        statement = statement.where(AccessLog.short_link_id == filters.short_link_id)
+    if filters.short_code:
+        statement = statement.where(
+            ShortLink.short_code.startswith(filters.short_code, autoescape=True)
+        )
+    if filters.name:
+        statement = statement.where(
+            func.lower(ShortLink.name).contains(filters.name.lower(), autoescape=True)
+        )
+    if filters.date_from:
+        statement = statement.where(AccessLog.access_date >= filters.date_from)
+    if filters.date_to:
+        statement = statement.where(AccessLog.access_date <= filters.date_to)
+    if filters.countries:
+        statement = statement.where(AccessLog.country.in_(filters.countries))
+    if filters.results:
+        statement = statement.where(
+            AccessLog.result.in_(tuple(value.value for value in filters.results))
+        )
+    if decoded_cursor:
+        statement = statement.where(
+            tuple_(AccessLog.accessed_at, AccessLog.id)
+            < tuple_(decoded_cursor.accessed_at, decoded_cursor.id)
+        )
+
+    result = await db.execute(
+        statement.order_by(AccessLog.accessed_at.desc(), AccessLog.id.desc()).limit(
+            limit + 1
+        )
+    )
+    selected = result.all()
+    has_more = len(selected) > limit
+    page_rows = selected[:limit]
+    items = tuple(
+        AccessLogListRow(
+            log=row[0],
+            short_code=row[1],
+            short_link_name=row[2],
+        )
+        for row in page_rows
+    )
+    next_cursor = None
+    if has_more:
+        last = items[-1].log
+        next_cursor = encode_cursor(
+            LogCursor(accessed_at=last.accessed_at, id=last.id),
+            filter_digest,
+            settings.secret_key,
+        )
+    return AccessLogPage(items=items, next_cursor=next_cursor, has_more=has_more)
 
 
 async def daily_stats(
