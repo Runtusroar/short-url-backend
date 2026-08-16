@@ -34,6 +34,12 @@ from app.models import (
 )
 
 
+def _current_date_in_timezone(timezone: str, now: datetime | None = None) -> date:
+    """Return the local calendar date for one UTC instant in a domain timezone."""
+    instant = now if now is not None else datetime.now(UTC)
+    return instant.astimezone(ZoneInfo(timezone)).date()
+
+
 async def _resolve_effective_domain(
     domain_id: UUID | None,
     current_user: User,
@@ -200,7 +206,7 @@ async def daily_stats_for_links(
 ) -> list[dict]:
     """Return today's visit count for each short link in the current domain."""
     if stats_date is None:
-        stats_date = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        stats_date = _current_date_in_timezone(current_domain.timezone)
 
     base_query = select(ShortLink).where(
         ShortLink.domain_id == current_domain.id, ShortLink.deleted_at.is_(None)

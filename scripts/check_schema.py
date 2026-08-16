@@ -167,7 +167,16 @@ def evaluate_schema(
                     indexes="invalid",
                     target_url_ondelete=normalized_ondelete,
                 )
-            if index_sorting is not None:
+            if mode == "post":
+                if index_sorting is None:
+                    return _error(
+                        mode=mode,
+                        error_code="index_sorting_unknown",
+                        detail=identifier,
+                        schema="drifted",
+                        indexes="invalid",
+                        target_url_ondelete=normalized_ondelete,
+                    )
                 sorting = index_sorting.get(table_name, {}).get(index_name)
                 if sorting != EXPECTED_INDEX_SORTING[index_name]:
                     return _error(
@@ -189,17 +198,16 @@ def evaluate_schema(
             target_url_ondelete=normalized_ondelete,
         )
 
-    if mode == "post" and normalized_ondelete != "SET NULL":
-        return _error(
-            mode=mode,
-            error_code="target_url_foreign_key_mismatch",
-            detail="access_logs.target_url_id",
-            schema="drifted",
-            indexes="missing" if missing_indexes else "valid",
-            target_url_ondelete=normalized_ondelete,
-        )
-
-    if mode == "post" and foreign_key_actions is not None:
+    if mode == "post":
+        if foreign_key_actions is None:
+            return _error(
+                mode=mode,
+                error_code="access_log_foreign_key_unknown",
+                detail="access_logs",
+                schema="drifted",
+                indexes="missing" if missing_indexes else "valid",
+                target_url_ondelete=normalized_ondelete,
+            )
         for column, expected in EXPECTED_ONDELETE.items():
             if foreign_key_actions.get(column) != expected:
                 return _error(
@@ -210,6 +218,16 @@ def evaluate_schema(
                     indexes="missing" if missing_indexes else "valid",
                     target_url_ondelete=normalized_ondelete,
                 )
+
+        if normalized_ondelete != "SET NULL":
+            return _error(
+                mode=mode,
+                error_code="target_url_foreign_key_mismatch",
+                detail="access_logs.target_url_id",
+                schema="drifted",
+                indexes="missing" if missing_indexes else "valid",
+                target_url_ondelete=normalized_ondelete,
+            )
 
     if missing_indexes or normalized_ondelete != "SET NULL":
         return {

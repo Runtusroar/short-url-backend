@@ -1,9 +1,16 @@
 """Redirect service edge case tests."""
 
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.core.config import settings
 from app.core.exceptions import PermissionDeniedError
 from app.features.redirect import service
 from app.features.redirect.service import (
@@ -16,8 +23,162 @@ from app.features.redirect.service import (
     weighted_random_choice,
 )
 from app.features.redirect.ua import get_platform
-from app.models import AccessRule, Domain, ShortLink, TargetUrl
+from app.features.short_links import service as short_link_service
+from app.features.short_links.service import (
+    _current_date_in_timezone,
+    daily_stats_for_links,
+)
+from app.models import AccessLog, AccessRule, Domain, ShortLink, TargetUrl, User
 from app.models.enums import DecisionReason, RedirectResult
+
+
+def test_current_date_in_domain_timezone_uses_the_same_utc_instant():
+    instant = datetime(2026, 1, 1, 1, 30, tzinfo=UTC)
+
+    assert _current_date_in_timezone("Asia/Shanghai", instant).isoformat() == "2026-01-01"
+    assert _current_date_in_timezone("America/New_York", instant).isoformat() == "2025-12-31"
+
+
+async def test_daily_stats_default_uses_current_domain_timezone(monkeypatch):
+    observed_timezones = []
+
+    def current_date(timezone):
+        observed_timezones.append(timezone)
+        return datetime(2026, 1, 1, tzinfo=UTC).date()
+
+    monkeypatch.setattr(short_link_service, "_current_date_in_timezone", current_date)
+    db = _RecordingSession([_QueryResult(values=[])], [])
+    await daily_stats_for_links(
+        db,
+        type("User", (), {"role": "admin"})(),
+        Domain(id=uuid4(), timezone="America/New_York"),
+        None,
+    )
+
+    assert observed_timezones == ["America/New_York"]
+
+
+class _DeleteSignalSession(AsyncSession):
+    delete_started: asyncio.Event
+
+    async def execute(self, statement, *args, **kwargs):
+        if getattr(statement, "is_delete", False):
+            self.delete_started.set()
+        return await super().execute(statement, *args, **kwargs)
+
+
+@asynccontextmanager
+async def _redirect_lock_sessions():
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    delete_sessions = async_sessionmaker(
+        engine, class_=_DeleteSignalSession, expire_on_commit=False
+    )
+    try:
+        yield sessions, delete_sessions
+    finally:
+        await engine.dispose()
+
+
+async def _wait_for_delete_lock(observer, pid):
+    for _ in range(200):
+        wait_event = await observer.scalar(
+            text("SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"),
+            {"pid": pid},
+        )
+        if wait_event == "Lock":
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("DELETE did not wait on the redirect transaction lock")
+
+
+async def _seed_redirect_lock_case(sessions, *, with_rule):
+    async with sessions() as session:
+        owner = await session.scalar(select(User).where(User.username == "admin"))
+        domain = Domain(name=f"lock-{uuid4().hex}.local", timezone="Asia/Shanghai")
+        session.add(domain)
+        await session.flush()
+        link = ShortLink(
+            domain_id=domain.id,
+            short_code=uuid4().hex[:8],
+            name="lock case",
+            owner_id=owner.id,
+            default_action="allow",
+        )
+        session.add(link)
+        await session.flush()
+        target = TargetUrl(
+            short_link_id=link.id,
+            url="https://snapshot.example/immutable",
+            url_type="allowed",
+        )
+        session.add(target)
+        rule = None
+        if with_rule:
+            rule = AccessRule(
+                short_link_id=link.id,
+                name="immutable matched rule",
+                action="allow",
+                priority=0,
+            )
+            session.add(rule)
+        await session.commit()
+        return domain.id, link.id, target.id, rule.id if rule else None
+
+
+@pytest.mark.parametrize("locked_kind", ("target", "rule"))
+async def test_redirect_decision_key_share_lock_preserves_snapshots_through_delete(
+    locked_kind,
+):
+    async with _redirect_lock_sessions() as (sessions, delete_sessions):
+        domain_id, link_id, target_id, rule_id = await _seed_redirect_lock_case(
+            sessions, with_rule=locked_kind == "rule"
+        )
+        async with sessions() as decision_session, delete_sessions() as delete_session, sessions() as observer:
+            domain = await decision_session.get(Domain, domain_id)
+            link = await decision_session.get(ShortLink, link_id)
+            decision = await get_redirect_target(
+                decision_session, link, None, None, None, False, False
+            )
+            assert decision.target.id == target_id
+            if locked_kind == "rule":
+                assert decision.matched_rule.id == rule_id
+
+            delete_session.delete_started = asyncio.Event()
+            await delete_session.execute(
+                text("SELECT set_config('application_name', :name, false)"),
+                {"name": f"task5-delete-{locked_kind}-{uuid4().hex}"},
+            )
+            delete_pid = await delete_session.scalar(text("SELECT pg_backend_pid()"))
+            table = TargetUrl if locked_kind == "target" else AccessRule
+            identifier = target_id if locked_kind == "target" else rule_id
+            delete_task = asyncio.create_task(
+                delete_session.execute(delete(table).where(table.id == identifier))
+            )
+            try:
+                await asyncio.wait_for(delete_session.delete_started.wait(), timeout=5)
+                await _wait_for_delete_lock(observer, delete_pid)
+                await service._log_access(
+                    decision_session, link, domain, decision, "203.0.113.7", None,
+                    None, None, None, "lock.example", "GET",
+                )
+                await asyncio.wait_for(delete_task, timeout=5)
+                await delete_session.commit()
+            finally:
+                if not delete_task.done():
+                    delete_task.cancel()
+                    await asyncio.gather(delete_task, return_exceptions=True)
+                if delete_session.in_transaction():
+                    await delete_session.rollback()
+
+        async with sessions() as verify:
+            log = await verify.scalar(select(AccessLog).where(AccessLog.short_link_id == link_id))
+            assert log.target_url_snapshot == "https://snapshot.example/immutable"
+            if locked_kind == "target":
+                assert log.target_url_id is None
+            else:
+                assert log.matched_rule_id is None
+                assert log.matched_rule_name == "immutable matched rule"
 
 
 def test_ua_platform_variants():
