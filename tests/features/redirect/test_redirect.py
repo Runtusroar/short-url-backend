@@ -74,12 +74,13 @@ def test_rule_matches_country_platform_and_any_referer_pattern():
 def test_evaluate_rules_ignores_inactive_rule_and_returns_default_without_match():
     inactive = _rule(action="deny", is_active=False)
 
-    action, matched_rule = evaluate_rules(
+    outcome = evaluate_rules(
         [inactive], FakeShortLink("deny"), None, None, None, False
     )
 
-    assert action == "deny"
-    assert matched_rule is None
+    assert outcome.action == "deny"
+    assert outcome.matched_rule_id is None
+    assert outcome.matched_rule_priority is None
 
 
 def test_evaluate_rules_uses_priority_then_id_for_matching_rule():
@@ -90,12 +91,13 @@ def test_evaluate_rules_uses_priority_then_id_for_matching_rule():
         id=UUID("00000000-0000-0000-0000-000000000002"), name="second", action="allow"
     )
 
-    action, matched_rule = evaluate_rules(
+    outcome = evaluate_rules(
         [later, earlier], FakeShortLink(), None, None, None, False
     )
 
-    assert action == "deny"
-    assert matched_rule is earlier
+    assert outcome.action == "deny"
+    assert outcome.matched_rule_id == earlier.id
+    assert outcome.matched_rule_priority == earlier.priority
 
 
 def test_weighted_random_choice_ignores_inactive_and_non_positive_weights():

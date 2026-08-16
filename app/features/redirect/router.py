@@ -29,6 +29,8 @@ async def redirect(
         ua_string,
         referer,
         request.method,
+        getattr(request.app.state, "redis", None),
+        getattr(request.app.state, "maxmind_insights", None),
     )
 
     return Response(status_code=302, headers={"Location": target_url})

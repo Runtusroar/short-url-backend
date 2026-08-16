@@ -10,7 +10,6 @@ from app.integrations.maxmind.country import get_country
 from app.integrations.maxmind.insights import MaxMindInsightsClient
 from app.integrations.redis import close_redis_client, create_redis_client
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -34,11 +33,13 @@ def test_redirect_service_exposes_one_request_workflow():
         "db",
         "host",
         "short_code",
-            "client_ip",
-            "ua_string",
-            "referer",
-            "request_method",
-        ]
+        "client_ip",
+        "ua_string",
+        "referer",
+        "request_method",
+        "redis",
+        "insights",
+    ]
 
 
 def test_redirect_router_only_translates_http_around_the_workflow():
@@ -54,5 +55,6 @@ def test_redirect_router_only_translates_http_around_the_workflow():
 
     assert service_names == {"execute_redirect"}
     assert "app.features.redirect.ua" not in imported_modules
+    assert "app.features.redirect.proxy_intelligence" not in imported_modules
     assert "app.integrations.maxmind.country" not in imported_modules
     assert "app.core.exceptions" not in imported_modules

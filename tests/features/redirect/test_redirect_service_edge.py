@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import settings
 from app.core.exceptions import PermissionDeniedError
 from app.features.redirect import service
+from app.features.redirect.proxy_intelligence import ProxyAssessment
 from app.features.redirect.service import (
     _match_list,
     _match_referer,
@@ -29,7 +30,15 @@ from app.features.short_links.service import (
     daily_stats_for_links,
 )
 from app.models import AccessLog, AccessRule, Domain, ShortLink, TargetUrl, User
-from app.models.enums import DecisionReason, RedirectResult
+from app.models.enums import DecisionReason, ProxyCheckStatus, RedirectResult
+
+SKIPPED_ASSESSMENT = ProxyAssessment(
+    None,
+    (),
+    ProxyCheckStatus.SKIPPED,
+    None,
+    None,
+)
 
 
 def test_current_date_in_domain_timezone_uses_the_same_utc_instant():
@@ -160,7 +169,7 @@ async def test_redirect_decision_key_share_lock_preserves_snapshots_through_dele
                 await _wait_for_delete_lock(observer, delete_pid)
                 await service._log_access(
                     decision_session, link, domain, decision, "203.0.113.7", None,
-                    None, None, None, "lock.example", "GET",
+                    None, None, None, "lock.example", "GET", SKIPPED_ASSESSMENT,
                 )
                 await asyncio.wait_for(delete_task, timeout=5)
                 await delete_session.commit()
@@ -273,11 +282,12 @@ def test_evaluate_rules_priority():
         is_active=True,
     )
     short_link = ShortLink(default_action="allow")
-    action, matched_rule = evaluate_rules(
+    outcome = evaluate_rules(
         [allow, deny], short_link, None, None, None, False
     )
-    assert action == "deny"
-    assert matched_rule is deny
+    assert outcome.action == "deny"
+    assert outcome.matched_rule_id == deny.id
+    assert outcome.matched_rule_priority == deny.priority
 
 
 def test_evaluate_rules_inactive_ignored():
@@ -291,11 +301,12 @@ def test_evaluate_rules_inactive_ignored():
         is_active=False,
     )
     short_link = ShortLink(default_action="allow")
-    action, matched_rule = evaluate_rules(
+    outcome = evaluate_rules(
         [inactive], short_link, None, None, None, False
     )
-    assert action == "allow"
-    assert matched_rule is None
+    assert outcome.action == "allow"
+    assert outcome.matched_rule_id is None
+    assert outcome.matched_rule_priority is None
 
 
 def test_weighted_random_choice_excludes_non_positive_weights():
@@ -333,6 +344,7 @@ async def test_redirect_decision_distinguishes_matched_default_blacklist_and_no_
         _RecordingSession(
             [
                 _QueryResult(values=[matched_rule]),
+                _QueryResult(scalar=matched_rule),
                 _QueryResult(values=[allowed_target]),
             ],
             [],
@@ -436,6 +448,9 @@ class _RecordingSession:
         self.events.append("commit")
         self.commits += 1
 
+    async def rollback(self):
+        self.events.append("rollback")
+
 
 async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error(
     monkeypatch,
@@ -468,6 +483,10 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
             _QueryResult(scalar=link),
             _QueryResult(scalar=None),
             _QueryResult(values=[rule]),
+            _QueryResult(scalar=domain),
+            _QueryResult(scalar=link),
+            _QueryResult(scalar=None),
+            _QueryResult(values=[rule]),
             _QueryResult(values=[]),
         ],
         events,
@@ -494,6 +513,8 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
             "Googlebot/2.1 (+http://www.google.com/bot.html)",
             "https://source.example/path",
             "HEAD",
+            None,
+            None,
         )
 
     assert raised.value.status_code == 403
@@ -504,6 +525,11 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
         "query",
         ("country", "203.0.113.9"),
         ("platform", "Googlebot/2.1 (+http://www.google.com/bot.html)"),
+        "query",
+        "rollback",
+        "query",
+        "query",
+        "query",
         "query",
         "query",
         "log",
@@ -531,6 +557,7 @@ async def test_execute_redirect_preserves_bot_proxy_policy_and_logs_before_error
     assert log.is_anonymous is True
     assert log.proxy_types == []
     assert log.proxy_source == "assumed_bot"
+    assert log.proxy_error_code is None
     assert log.accessed_at.tzinfo is not None
     assert log.access_date == log.accessed_at.astimezone(service.ZoneInfo("Asia/Shanghai")).date()
     assert log.dedup_bucket == int(log.accessed_at.timestamp() // 30) * 30
