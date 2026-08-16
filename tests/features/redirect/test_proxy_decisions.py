@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError, dataclass
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -231,6 +231,31 @@ class CountingSession(AsyncSession):
         await super().commit()
 
 
+class FinalRuleRaceSession(CountingSession):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.final_rules_loaded = asyncio.Event()
+        self.allow_candidate_lock = asyncio.Event()
+        self._active_rule_reads = 0
+
+    async def execute(self, statement, *args, **kwargs):
+        result = await super().execute(statement, *args, **kwargs)
+        statement_text = str(statement)
+        is_active_rule_read = (
+            statement.is_select
+            and statement._for_update_arg is None
+            and "FROM access_rules" in statement_text
+            and "access_rules.is_active = true" in statement_text
+            and "ORDER BY access_rules.priority, access_rules.id" in statement_text
+        )
+        if is_active_rule_read:
+            self._active_rule_reads += 1
+            if self._active_rule_reads == 2:
+                self.final_rules_loaded.set()
+                await self.allow_candidate_lock.wait()
+        return result
+
+
 @asynccontextmanager
 async def _nullpool_sessions(*, counting=False):
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
@@ -242,6 +267,21 @@ async def _nullpool_sessions(*, counting=False):
     )
     try:
         yield sessions
+    finally:
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def _final_rule_race_sessions():
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    race_sessions = async_sessionmaker(
+        engine,
+        class_=FinalRuleRaceSession,
+        expire_on_commit=False,
+    )
+    try:
+        yield sessions, race_sessions
     finally:
         await engine.dispose()
 
@@ -776,3 +816,136 @@ async def test_initial_blacklist_removal_uses_skipped_unknown_fail_open_without_
             source=None,
             error_code=None,
         )
+
+
+@pytest.mark.parametrize("mutation", ["delete", "deactivate"])
+async def test_missing_candidate_rule_restarts_final_decision_from_current_default(
+    mutation,
+):
+    async with _final_rule_race_sessions() as (sessions, race_sessions):
+        async with sessions() as seed_session:
+            case = await _seed_redirect_case(
+                seed_session,
+                default_action="deny",
+                rules=({"name": "removed allow", "action": "allow"},),
+            )
+        async with race_sessions() as redirect_session, sessions() as other_session:
+            redirect_task = asyncio.create_task(
+                _execute_case(
+                    redirect_session,
+                    case,
+                    redis=UnexpectedDependency(),
+                    insights=UnexpectedDependency(),
+                )
+            )
+            try:
+                await asyncio.wait_for(
+                    redirect_session.final_rules_loaded.wait(),
+                    timeout=1,
+                )
+                if mutation == "delete":
+                    statement = delete(AccessRule).where(
+                        AccessRule.id == case.rule_ids[0]
+                    )
+                else:
+                    statement = (
+                        update(AccessRule)
+                        .where(AccessRule.id == case.rule_ids[0])
+                        .values(is_active=False)
+                    )
+                await asyncio.wait_for(other_session.execute(statement), timeout=1)
+                await asyncio.wait_for(other_session.commit(), timeout=1)
+                redirect_session.allow_candidate_lock.set()
+                target = await asyncio.wait_for(redirect_task, timeout=2)
+            finally:
+                redirect_session.allow_candidate_lock.set()
+                if not redirect_task.done():
+                    redirect_task.cancel()
+                    await asyncio.gather(redirect_task, return_exceptions=True)
+
+            assert target.startswith("https://denied.example/")
+            assert redirect_session.commit_count == 1
+            logs = list(
+                await redirect_session.scalars(
+                    select(AccessLog).where(AccessLog.short_link_id == case.link_id)
+                )
+            )
+            assert len(logs) == 1
+            log = logs[0]
+            assert log.result == "denied"
+            assert log.decision_reason == "default_action"
+            assert log.matched_rule_id is None
+            assert log.matched_rule_name is None
+            assert log.target_url_snapshot == target
+
+
+async def test_updated_candidate_rule_restarts_with_current_locked_rule_facts():
+    async with _final_rule_race_sessions() as (sessions, race_sessions):
+        async with sessions() as seed_session:
+            case = await _seed_redirect_case(
+                seed_session,
+                default_action="deny",
+                rules=(
+                    {"name": "stale allow", "action": "allow", "priority": 0},
+                    {
+                        "name": "stale backup",
+                        "action": "allow",
+                        "priority": 5,
+                    },
+                ),
+            )
+        async with race_sessions() as redirect_session, sessions() as other_session:
+            redirect_task = asyncio.create_task(
+                _execute_case(
+                    redirect_session,
+                    case,
+                    redis=UnexpectedDependency(),
+                    insights=UnexpectedDependency(),
+                )
+            )
+            try:
+                await asyncio.wait_for(
+                    redirect_session.final_rules_loaded.wait(),
+                    timeout=1,
+                )
+                candidate_update = (
+                    update(AccessRule)
+                    .where(AccessRule.id == case.rule_ids[0])
+                    .values(countries=["CN"], priority=7)
+                )
+                winner_update = (
+                    update(AccessRule)
+                    .where(AccessRule.id == case.rule_ids[1])
+                    .values(action="deny", name="current deny", priority=3)
+                )
+                await asyncio.wait_for(
+                    other_session.execute(candidate_update),
+                    timeout=1,
+                )
+                await asyncio.wait_for(
+                    other_session.execute(winner_update),
+                    timeout=1,
+                )
+                await asyncio.wait_for(other_session.commit(), timeout=1)
+                redirect_session.allow_candidate_lock.set()
+                target = await asyncio.wait_for(redirect_task, timeout=2)
+            finally:
+                redirect_session.allow_candidate_lock.set()
+                if not redirect_task.done():
+                    redirect_task.cancel()
+                    await asyncio.gather(redirect_task, return_exceptions=True)
+
+            assert target.startswith("https://denied.example/")
+            assert redirect_session.commit_count == 1
+            logs = list(
+                await redirect_session.scalars(
+                    select(AccessLog).where(AccessLog.short_link_id == case.link_id)
+                )
+            )
+            assert len(logs) == 1
+            log = logs[0]
+            assert log.result == "denied"
+            assert log.decision_reason == "matched_rule"
+            assert log.matched_rule_id == case.rule_ids[1]
+            assert log.matched_rule_name == "current deny"
+            assert log.target_url_snapshot == target

@@ -29,6 +29,8 @@ from app.models.enums import (
     RedirectResult,
 )
 
+FINAL_DECISION_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class RedirectDecision:
@@ -145,44 +147,29 @@ async def get_redirect_target(
     is_proxy: bool,
 ) -> RedirectDecision:
     if is_blacklisted:
-        redirect_result = RedirectResult.BLOCKED
-        reason = DecisionReason.BLACKLIST
-        matched_rule = None
-    else:
-        rules = await _load_active_rules(db, short_link.id)
-        outcome = evaluate_rules(
-            rules, short_link, country, platform, referer, is_proxy
-        )
-        matched_rule = await _lock_matched_rule(db, outcome.matched_rule_id)
-        redirect_result = (
-            RedirectResult.ALLOWED
-            if outcome.action == AccessAction.ALLOW
-            else RedirectResult.DENIED
-        )
-        reason = (
-            DecisionReason.MATCHED_RULE
-            if matched_rule
-            else DecisionReason.DEFAULT_ACTION
+        return await _select_target_for_outcome(
+            db,
+            short_link,
+            RuleOutcome(AccessAction.DENY, None, None),
+            True,
+            None,
         )
 
-    url_type = (
-        "denied"
-        if redirect_result in (RedirectResult.DENIED, RedirectResult.BLOCKED)
-        else "allowed"
+    rules = await _load_active_rules(db, short_link.id)
+    outcome = evaluate_rules(rules, short_link, country, platform, referer, is_proxy)
+    matched_rule = await _lock_matched_rule(db, outcome.matched_rule_id)
+    if outcome.matched_rule_id is not None and not _locked_rule_matches_outcome(
+        matched_rule,
+        outcome,
+    ):
+        raise RuntimeError("redirect rule changed before it could be locked")
+    return await _select_target_for_outcome(
+        db,
+        short_link,
+        outcome,
+        False,
+        matched_rule,
     )
-    result = await db.execute(
-        select(TargetUrl).where(
-            TargetUrl.short_link_id == short_link.id,
-            TargetUrl.url_type == url_type,
-            TargetUrl.is_active == True,
-            TargetUrl.weight > 0,
-        ).with_for_update(key_share=True)
-    )
-    urls = result.scalars().all()
-    target = weighted_random_choice(urls)
-    if target is None:
-        reason = DecisionReason.NO_TARGET
-    return RedirectDecision(redirect_result, reason, matched_rule, target)
 
 
 async def _load_active_rules(
@@ -196,6 +183,7 @@ async def _load_active_rules(
             AccessRule.is_active == True,
         )
         .order_by(AccessRule.priority, AccessRule.id)
+        .execution_options(populate_existing=True)
     )
     return list(result.scalars().all())
 
@@ -213,22 +201,95 @@ async def _lock_matched_rule(
             AccessRule.is_active == True,
         )
         .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
 
-async def _get_redirect_target_for_outcome(
+def _locked_rule_matches_outcome(
+    matched_rule: AccessRule | None,
+    outcome: RuleOutcome,
+) -> bool:
+    return matched_rule is not None and (
+        matched_rule.id,
+        AccessAction(matched_rule.action),
+        matched_rule.priority,
+    ) == (
+        outcome.matched_rule_id,
+        outcome.action,
+        outcome.matched_rule_priority,
+    )
+
+
+def _assessment_outcome(
+    non_proxy: RuleOutcome,
+    proxy: RuleOutcome,
+    assessment: ProxyAssessment,
+) -> RuleOutcome:
+    if assessment.is_anonymous is None:
+        return choose_fail_open_outcome(non_proxy, proxy)
+    return proxy if assessment.is_anonymous else non_proxy
+
+
+def _locked_rule_confirms_current_outcome(
+    rules: list[AccessRule],
+    matched_rule: AccessRule | None,
+    expected: RuleOutcome,
+    short_link: ShortLink,
+    country: str | None,
+    platform: str | None,
+    referer: str | None,
+    assessment: ProxyAssessment,
+) -> bool:
+    if not _locked_rule_matches_outcome(matched_rule, expected):
+        return False
+    assert matched_rule is not None
+    refreshed_rules = [
+        matched_rule if rule.id == matched_rule.id else rule for rule in rules
+    ]
+    refreshed_non_proxy = evaluate_rules(
+        refreshed_rules,
+        short_link,
+        country,
+        platform,
+        referer,
+        False,
+    )
+    refreshed_proxy = evaluate_rules(
+        refreshed_rules,
+        short_link,
+        country,
+        platform,
+        referer,
+        True,
+    )
+    return (
+        _assessment_outcome(
+            refreshed_non_proxy,
+            refreshed_proxy,
+            assessment,
+        )
+        == expected
+    )
+
+
+async def _select_target_for_outcome(
     db: AsyncSession,
     short_link: ShortLink,
     outcome: RuleOutcome,
     blacklisted: bool,
+    matched_rule: AccessRule | None,
 ) -> RedirectDecision:
     if blacklisted:
         redirect_result = RedirectResult.BLOCKED
         reason = DecisionReason.BLACKLIST
         matched_rule = None
     else:
-        matched_rule = await _lock_matched_rule(db, outcome.matched_rule_id)
+        if outcome.matched_rule_id is not None and not _locked_rule_matches_outcome(
+            matched_rule,
+            outcome,
+        ):
+            raise RuntimeError("rule-derived action requires its current locked rule")
         redirect_result = (
             RedirectResult.ALLOWED
             if outcome.action == AccessAction.ALLOW
@@ -455,38 +516,58 @@ async def execute_redirect(
             lookup_required=lookup_required,
         )
 
-    domain, link = await resolve_domain_and_link(db, host, short_code)
-    blacklisted = await is_blacklisted(db, client_ip)
-    current_rules = await _load_active_rules(db, link.id)
-    current_non_proxy = evaluate_rules(
-        current_rules,
-        link,
-        country,
-        platform,
-        referer,
-        False,
-    )
-    current_proxy = evaluate_rules(
-        current_rules,
-        link,
-        country,
-        platform,
-        referer,
-        True,
-    )
-    if assessment.is_anonymous is None:
-        outcome = choose_fail_open_outcome(current_non_proxy, current_proxy)
-    elif assessment.is_anonymous:
-        outcome = current_proxy
-    else:
-        outcome = current_non_proxy
+    for _attempt in range(FINAL_DECISION_ATTEMPTS):
+        domain, link = await resolve_domain_and_link(db, host, short_code)
+        blacklisted = await is_blacklisted(db, client_ip)
+        current_rules = await _load_active_rules(db, link.id)
+        current_non_proxy = evaluate_rules(
+            current_rules,
+            link,
+            country,
+            platform,
+            referer,
+            False,
+        )
+        current_proxy = evaluate_rules(
+            current_rules,
+            link,
+            country,
+            platform,
+            referer,
+            True,
+        )
+        outcome = _assessment_outcome(
+            current_non_proxy,
+            current_proxy,
+            assessment,
+        )
+        matched_rule = None
+        if not blacklisted and outcome.matched_rule_id is not None:
+            matched_rule = await _lock_matched_rule(db, outcome.matched_rule_id)
+            if not _locked_rule_confirms_current_outcome(
+                current_rules,
+                matched_rule,
+                outcome,
+                link,
+                country,
+                platform,
+                referer,
+                assessment,
+            ):
+                del current_rules, link, domain
+                await db.rollback()
+                continue
 
-    decision = await _get_redirect_target_for_outcome(
-        db,
-        link,
-        outcome,
-        blacklisted,
-    )
+        decision = await _select_target_for_outcome(
+            db,
+            link,
+            outcome,
+            blacklisted,
+            matched_rule,
+        )
+        break
+    else:
+        raise RuntimeError("redirect rule data changed repeatedly")
     await _log_access(
         db,
         link,
