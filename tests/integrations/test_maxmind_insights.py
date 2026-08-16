@@ -1,6 +1,5 @@
 """Contract tests for the MaxMind Insights adapter; the network is always fake."""
 
-import asyncio
 import traceback
 from unittest.mock import AsyncMock
 
@@ -10,7 +9,9 @@ from fastapi import FastAPI
 from geoip2.errors import (
     AddressNotFoundError,
     AuthenticationError,
+    GeoIP2Error,
     HTTPError,
+    InvalidRequestError,
     OutOfQueriesError,
     PermissionRequiredError,
 )
@@ -18,14 +19,13 @@ from geoip2.models import Insights
 from pydantic import SecretStr
 
 from app.core.config import settings
-from app.main import lifespan
 from app.integrations.maxmind.insights import (
     InsightsErrorKind,
     InsightsLookupError,
     InsightsResult,
     MaxMindInsightsClient,
 )
-
+from app.main import lifespan
 
 ANONYMIZER_RESPONSE = {
     "anonymizer": {
@@ -118,13 +118,56 @@ async def test_lookup_uses_stable_proxy_type_order(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("anonymizer", "expected"),
+    [
+        ({}, InsightsResult(is_anonymous=False, proxy_types=())),
+        (
+            {
+                "is_anonymous": True,
+                "is_public_proxy": True,
+                "is_tor_exit_node": True,
+            },
+            InsightsResult(
+                is_anonymous=True,
+                proxy_types=("public_proxy", "tor_exit_node"),
+            ),
+        ),
+    ],
+    ids=("sparse-non-anonymous", "sparse-anonymous"),
+)
+async def test_lookup_defaults_omitted_anonymizer_booleans_to_false(
+    monkeypatch,
+    anonymizer,
+    expected,
+):
+    client, fake_sdk = make_client(monkeypatch)
+    fake_sdk.insights.return_value = Insights(
+        {**minimal_insights_payload(), "anonymizer": anonymizer}
+    )
+
+    result = await client.lookup("8.8.8.8")
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
     ("failure", "kind"),
     [
         (AuthenticationError("credential text"), InsightsErrorKind.AUTH_FAILED),
         (OutOfQueriesError("balance text"), InsightsErrorKind.INSUFFICIENT_FUNDS),
         (PermissionRequiredError("permission text"), InsightsErrorKind.PERMISSION_DENIED),
         (AddressNotFoundError("address text"), InsightsErrorKind.IP_NOT_FOUND),
-        (asyncio.TimeoutError(), InsightsErrorKind.TIMEOUT),
+        (
+            InvalidRequestError(
+                "invalid request text",
+                "UNEXPECTED_ERROR_CODE",
+                400,
+                "https://secret.example",
+            ),
+            InsightsErrorKind.INVALID_RESPONSE,
+        ),
+        (GeoIP2Error("generic sdk text"), InsightsErrorKind.INVALID_RESPONSE),
+        (TimeoutError(), InsightsErrorKind.TIMEOUT),
         (aiohttp.ClientError("transport text"), InsightsErrorKind.UPSTREAM_ERROR),
         (HTTPError("rate body", 429, "https://secret.example", "response body"), InsightsErrorKind.RATE_LIMITED),
         (HTTPError("server body", 500, "https://secret.example", "response body"), InsightsErrorKind.UPSTREAM_ERROR),
@@ -156,13 +199,71 @@ async def test_lookup_error_traceback_redacts_upstream_message(monkeypatch):
     assert secret not in formatted_traceback
 
 
-@pytest.mark.parametrize("anonymizer", [None, {}, {"is_anonymous": "yes"}])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        InvalidRequestError(
+            "never-expose-unexpected-sdk-message",
+            "UNEXPECTED_ERROR_CODE",
+            400,
+            "https://secret.example",
+        ),
+        GeoIP2Error("never-expose-unexpected-sdk-message"),
+    ],
+    ids=("invalid-request", "geoip2-fallback"),
+)
+async def test_unexpected_official_sdk_error_traceback_is_sanitized(
+    monkeypatch,
+    failure,
+):
+    secret = "never-expose-unexpected-sdk-message"
+    client, fake_sdk = make_client(monkeypatch)
+    fake_sdk.insights.side_effect = failure
+
+    with pytest.raises(InsightsLookupError) as raised:
+        await client.lookup("8.8.8.8")
+
+    assert raised.value.kind is InsightsErrorKind.INVALID_RESPONSE
+    assert str(raised.value) == "invalid_response"
+    formatted_traceback = "".join(traceback.format_exception(raised.value))
+    assert secret not in formatted_traceback
+
+
+@pytest.mark.parametrize("anonymizer", [None, {"is_anonymous": "yes"}])
 async def test_lookup_rejects_missing_or_malformed_anonymizer(monkeypatch, anonymizer):
     client, fake_sdk = make_client(monkeypatch)
     payload = minimal_insights_payload()
     if anonymizer is not None:
         payload["anonymizer"] = anonymizer
     fake_sdk.insights.return_value = Insights(payload)
+
+    with pytest.raises(InsightsLookupError) as raised:
+        await client.lookup("8.8.8.8")
+
+    assert raised.value.kind is InsightsErrorKind.INVALID_RESPONSE
+    assert str(raised.value) == "invalid_response"
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "is_anonymous",
+        "is_anonymous_vpn",
+        "is_hosting_provider",
+        "is_public_proxy",
+        "is_residential_proxy",
+        "is_tor_exit_node",
+    ),
+)
+async def test_lookup_rejects_present_non_boolean_anonymizer_field(
+    monkeypatch,
+    field,
+):
+    client, fake_sdk = make_client(monkeypatch)
+    anonymizer = {"is_anonymous": False, field: "not-a-boolean"}
+    fake_sdk.insights.return_value = Insights(
+        {**minimal_insights_payload(), "anonymizer": anonymizer}
+    )
 
     with pytest.raises(InsightsLookupError) as raised:
         await client.lookup("8.8.8.8")

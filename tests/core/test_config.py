@@ -118,10 +118,37 @@ def test_env_maxmind_license_key_is_absent_from_validation_outputs(monkeypatch):
     assert_secret_is_absent_from_validation_output(secret, raised.value)
 
 
-@pytest.mark.parametrize("timeout", [0, -1])
-def test_maxmind_insights_requires_positive_timeout(timeout):
-    with pytest.raises(ValidationError, match="MAXMIND_TIMEOUT_SECONDS must be greater than zero"):
+@pytest.mark.parametrize(
+    "timeout",
+    [float("nan"), float("inf"), float("-inf"), 0, -1],
+    ids=("nan", "positive-infinity", "negative-infinity", "zero", "negative"),
+)
+def test_maxmind_insights_requires_finite_positive_timeout(timeout):
+    with pytest.raises(
+        ValidationError,
+        match="MAXMIND_TIMEOUT_SECONDS must be finite and greater than zero",
+    ):
         make_settings(maxmind_timeout_seconds=timeout)
+
+
+def test_maxmind_insights_accepts_finite_positive_timeout():
+    settings = make_settings(maxmind_timeout_seconds=0.125)
+
+    assert settings.maxmind_timeout_seconds == 0.125
+
+
+def test_invalid_maxmind_timeout_keeps_license_secret_out_of_validation_outputs():
+    secret = "distinctive-timeout-license-secret"
+
+    with pytest.raises(ValidationError) as raised:
+        make_settings(
+            maxmind_insights_enabled=True,
+            maxmind_account_id=123,
+            maxmind_license_key=secret,
+            maxmind_timeout_seconds=float("inf"),
+        )
+
+    assert_secret_is_absent_from_validation_output(secret, raised.value)
 
 
 def test_public_summary_redacts_maxmind_credentials():

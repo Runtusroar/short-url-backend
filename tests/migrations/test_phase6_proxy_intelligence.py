@@ -1,12 +1,16 @@
 """Phase 6 proxy error persistence migration contracts."""
 
+import os
+import subprocess
+import sys
+import time
 from subprocess import CalledProcessError
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
-from tests.migrations.support import get_schema_contract, run_alembic
+from tests.migrations.support import ROOT, get_schema_contract, run_alembic
 
 HEAD = "f84c2d7a901e"
 PREVIOUS = "c8e4f1a26b73"
@@ -117,6 +121,88 @@ def test_phase6_downgrade_rejects_persisted_error_before_writes(
     assert "proxy_error_code" in get_schema_contract(migration_database_url)["columns"][
         "access_logs"
     ]
+
+
+def test_phase6_downgrade_serializes_preflight_with_concurrent_writer(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", HEAD)
+    _seed_access_log(migration_database_url)
+    engine = create_engine(migration_database_url)
+    downgrade = None
+
+    try:
+        with engine.connect() as writer:
+            transaction = writer.begin()
+            writer_pid = writer.scalar(text("SELECT pg_backend_pid()"))
+            writer.execute(
+                text("UPDATE access_logs SET proxy_error_code = 'timeout'")
+            )
+
+            environment = os.environ.copy()
+            environment["DATABASE_URL"] = migration_database_url
+            downgrade = subprocess.Popen(
+                [sys.executable, "-m", "alembic", "downgrade", PREVIOUS],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            deadline = time.monotonic() + 10
+            while True:
+                with engine.connect() as observer:
+                    lock_is_waiting = observer.scalar(
+                        text(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_locks
+                                WHERE database = (
+                                    SELECT oid FROM pg_database
+                                    WHERE datname = current_database()
+                                )
+                                  AND relation = 'access_logs'::regclass
+                                  AND mode = 'AccessExclusiveLock'
+                                  AND NOT granted
+                                  AND pid <> :writer_pid
+                            )
+                            """
+                        ),
+                        {"writer_pid": writer_pid},
+                    )
+                if lock_is_waiting:
+                    break
+                if downgrade.poll() is not None:
+                    stdout, stderr = downgrade.communicate()
+                    pytest.fail(
+                        "downgrade exited before reaching the access_logs lock: "
+                        f"{stdout}{stderr}"
+                    )
+                if time.monotonic() >= deadline:
+                    pytest.fail("downgrade did not request the access_logs table lock")
+                time.sleep(0.01)
+
+            transaction.commit()
+            stdout, stderr = downgrade.communicate(timeout=10)
+
+        diagnostic = stdout + stderr
+        assert downgrade.returncode != 0
+        assert "proxy error downgrade invariant" in diagnostic
+        assert _scalar(migration_database_url, "SELECT version_num FROM alembic_version") == HEAD
+        assert "proxy_error_code" in get_schema_contract(migration_database_url)[
+            "columns"
+        ]["access_logs"]
+        assert _scalar(
+            migration_database_url,
+            "SELECT proxy_error_code FROM access_logs",
+        ) == "timeout"
+    finally:
+        if downgrade is not None and downgrade.poll() is None:
+            downgrade.terminate()
+            downgrade.communicate(timeout=10)
+        engine.dispose()
 
 
 @pytest.mark.parametrize("value", sorted(PROXY_ERROR_CODES))

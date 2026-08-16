@@ -516,6 +516,43 @@ class FailingRedis:
         return await self.delegate.eval(*args, **kwargs)
 
 
+class PermanentlyBlockingRedis:
+    def __init__(self, block_at):
+        self.block_at = block_at
+        self.get_calls = 0
+        self.blocked_operations: list[str] = []
+        self._never = asyncio.Event()
+
+    async def _block(self, operation):
+        self.blocked_operations.append(operation)
+        await self._never.wait()
+        raise AssertionError("permanently blocking operation unexpectedly resumed")
+
+    async def get(self, *_args, **_kwargs):
+        self.get_calls += 1
+        if self.block_at == "initial_read" and self.get_calls == 1:
+            return await self._block("initial_read")
+        if self.block_at == "post_lock_read" and self.get_calls == 4:
+            return await self._block("post_lock_read")
+        if self.block_at == "contended_reread" and self.get_calls == 4:
+            return await self._block("contended_reread")
+        return None
+
+    async def set(self, _key, _value, **options):
+        if options.get("nx") is True:
+            if self.block_at == "lock":
+                return await self._block("lock")
+            return self.block_at != "contended_reread"
+        if self.block_at == "cache":
+            return await self._block("cache")
+        return True
+
+    async def eval(self, *_args, **_kwargs):
+        if self.block_at == "release":
+            return await self._block("release")
+        return 1
+
+
 @pytest.mark.parametrize("redis", [None, FailingRedis(fail_operation="get")])
 async def test_redis_absence_or_initial_read_failure_suppresses_paid_lookup(redis):
     insights = StubInsights(result=InsightsResult(True, ("anonymous_vpn",)))
@@ -549,6 +586,33 @@ async def test_lock_failure_suppresses_paid_lookup(redis_case):
 
     assert result == ProxyAssessment.unknown(ProxyErrorCode.REDIS_UNAVAILABLE)
     assert insights.calls == 0
+
+
+@pytest.mark.parametrize(
+    "block_at",
+    ("initial_read", "lock", "post_lock_read", "contended_reread"),
+)
+async def test_permanently_blocking_prepaid_redis_operation_is_bounded_without_paid_call(
+    block_at,
+):
+    redis = PermanentlyBlockingRedis(block_at)
+    insights = StubInsights(result=InsightsResult(True, ("anonymous_vpn",)))
+
+    result = await asyncio.wait_for(
+        assess_proxy(
+            redis,
+            insights,
+            GLOBAL_IPV4,
+            "browser",
+            enabled=True,
+            lookup_required=True,
+        ),
+        timeout=1,
+    )
+
+    assert result == ProxyAssessment.unknown(ProxyErrorCode.REDIS_UNAVAILABLE)
+    assert insights.calls == 0
+    assert redis.blocked_operations == [block_at]
 
 
 class BlockingInsights(StubInsights):
@@ -810,6 +874,48 @@ async def test_post_success_redis_failure_preserves_result_and_logs_safely(
     rendered = caplog.text
     assert "redis-user" not in rendered
     assert "redis-password" not in rendered
+
+
+@pytest.mark.parametrize("block_at", ("cache", "release"))
+async def test_permanently_blocking_postpaid_redis_operation_preserves_known_result(
+    block_at,
+    caplog,
+):
+    redis = PermanentlyBlockingRedis(block_at)
+    insights = StubInsights(result=InsightsResult(True, ("anonymous_vpn",)))
+    caplog.set_level(logging.WARNING)
+
+    result = await asyncio.wait_for(
+        assess_proxy(
+            redis,
+            insights,
+            GLOBAL_IPV4,
+            "browser",
+            enabled=True,
+            lookup_required=True,
+        ),
+        timeout=1,
+    )
+
+    assert result == ProxyAssessment(
+        True,
+        ("anonymous_vpn",),
+        ProxyCheckStatus.CHECKED,
+        ProxySource.MAXMIND_INSIGHTS,
+        None,
+    )
+    assert insights.calls == 1
+    assert redis.blocked_operations == [block_at]
+    warnings = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "proxy_intelligence_redis_post_lookup_failure"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].error_class == "TimeoutError"
+    assert warnings[0].ip_address == GLOBAL_IPV4
+    assert "redis-user" not in caplog.text
+    assert "redis-password" not in caplog.text
 
 
 async def test_combined_post_success_redis_failures_emit_one_warning(

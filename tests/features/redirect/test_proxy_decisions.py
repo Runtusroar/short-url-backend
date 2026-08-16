@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError, dataclass
 from uuid import UUID, uuid4
 
 import pytest
+from geoip2.errors import GeoIP2Error
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -18,6 +19,7 @@ from app.integrations.maxmind.insights import (
     InsightsErrorKind,
     InsightsLookupError,
     InsightsResult,
+    MaxMindInsightsClient,
 )
 from app.models import (
     AccessLog,
@@ -207,6 +209,16 @@ class StubInsights:
             raise self.error
         assert self.result is not None
         return self.result
+
+
+class FailingOfficialSdk:
+    def __init__(self, failure):
+        self.failure = failure
+        self.calls = 0
+
+    async def insights(self, _ip_address):
+        self.calls += 1
+        raise self.failure
 
 
 class BlockingInsights(StubInsights):
@@ -607,6 +619,43 @@ async def test_maxmind_timeout_is_unknown_fail_open_and_logs_exact_facts(monkeyp
             source="maxmind_insights",
             error_code="timeout",
         )
+
+
+async def test_unexpected_official_sdk_error_fails_open_with_sanitized_committed_log(
+    monkeypatch,
+    caplog,
+):
+    secret = "never-expose-official-sdk-message"
+    monkeypatch.setattr(service.settings, "maxmind_insights_enabled", True)
+    redis = MemoryRedis()
+    sdk = FailingOfficialSdk(GeoIP2Error(secret))
+    insights = object.__new__(MaxMindInsightsClient)
+    insights._client = sdk
+    caplog.set_level("WARNING")
+
+    async with _nullpool_sessions() as sessions, sessions() as session:
+        case = await _seed_redirect_case(
+            session,
+            rules=(
+                {"action": "allow", "proxy_requirement": "non_proxy"},
+                {"action": "deny", "priority": 1, "proxy_requirement": "proxy"},
+            ),
+        )
+
+        target = await _execute_case(session, case, redis=redis, insights=insights)
+
+        assert target.startswith("https://allowed.example/")
+        assert sdk.calls == 1
+        log = await _case_log(session, case)
+        _assert_proxy_facts(
+            log,
+            status="error",
+            is_anonymous=None,
+            proxy_types=[],
+            source="maxmind_insights",
+            error_code="invalid_response",
+        )
+        assert secret not in caplog.text
 
 
 async def test_initial_blacklist_bypasses_assessment_and_logs_skipped_facts(monkeypatch):

@@ -1,9 +1,9 @@
+import math
 from typing import Any, Literal
 
 from pydantic import ConfigDict, SecretStr, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
-
 
 DEV_SECRET_VALUES = {
     "dev-secret",
@@ -111,8 +111,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_maxmind_insights(self):
-        if self.maxmind_timeout_seconds <= 0:
-            raise ValueError("MAXMIND_TIMEOUT_SECONDS must be greater than zero")
+        if not (
+            math.isfinite(self.maxmind_timeout_seconds)
+            and self.maxmind_timeout_seconds > 0
+        ):
+            raise ValueError(
+                "MAXMIND_TIMEOUT_SECONDS must be finite and greater than zero"
+            )
         license_key = (
             self.maxmind_license_key.get_secret_value()
             if self.maxmind_license_key is not None

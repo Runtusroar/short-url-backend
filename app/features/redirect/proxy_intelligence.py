@@ -5,7 +5,9 @@ import ipaddress
 import json
 import logging
 import secrets
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from redis.asyncio import Redis
 
@@ -23,6 +25,9 @@ TRANSIENT_ERROR_TTL_SECONDS = 120
 LONG_BREAKER_TTL_SECONDS = 1800
 RATE_LIMIT_BREAKER_TTL_SECONDS = 60
 LOCK_TTL_SECONDS = 5
+REDIS_OPERATION_BUDGET_SECONDS = 0.25
+
+_T = TypeVar("_T")
 
 PROXY_TYPES = (
     "anonymous_vpn",
@@ -165,26 +170,33 @@ def _malformed_cache_assessment() -> ProxyAssessment:
     return ProxyAssessment.unknown(ProxyErrorCode.INVALID_RESPONSE)
 
 
+async def _run_redis_operation(operation: Awaitable[_T]) -> _T:
+    return await asyncio.wait_for(
+        operation,
+        timeout=REDIS_OPERATION_BUDGET_SECONDS,
+    )
+
+
 async def _read_cached_assessment(
     redis: Redis,
     canonical_ip: str,
     keys: RedisKeyspace,
 ) -> ProxyAssessment | None:
-    success_raw = await redis.get(keys.success(canonical_ip))
+    success_raw = await _run_redis_operation(redis.get(keys.success(canonical_ip)))
     if success_raw is not None:
         decoded = decode_cache_record(success_raw)
         if decoded is None or decoded.status is not ProxyCheckStatus.CACHED:
             return _malformed_cache_assessment()
         return decoded
 
-    error_raw = await redis.get(keys.error(canonical_ip))
+    error_raw = await _run_redis_operation(redis.get(keys.error(canonical_ip)))
     if error_raw is not None:
         decoded = decode_cache_record(error_raw)
         if decoded is None or decoded.status is not ProxyCheckStatus.ERROR:
             return _malformed_cache_assessment()
         return decoded
 
-    breaker_raw = await redis.get(keys.breaker())
+    breaker_raw = await _run_redis_operation(redis.get(keys.breaker()))
     if breaker_raw is not None:
         decoded = decode_cache_record(breaker_raw)
         if decoded is None or decoded.status is not ProxyCheckStatus.ERROR:
@@ -246,32 +258,40 @@ async def _cache_assessment(
     result: InsightsResult | None,
 ) -> None:
     if result is not None:
-        await redis.set(
-            keys.success(canonical_ip),
-            _success_record(result),
-            ex=SUCCESS_TTL_SECONDS,
+        await _run_redis_operation(
+            redis.set(
+                keys.success(canonical_ip),
+                _success_record(result),
+                ex=SUCCESS_TTL_SECONDS,
+            )
         )
         return
 
     error_code = assessment.error_code
     assert error_code is not None
     if error_code in _LONG_BREAKER_ERRORS:
-        await redis.set(
-            keys.breaker(),
-            _error_record(error_code),
-            ex=LONG_BREAKER_TTL_SECONDS,
+        await _run_redis_operation(
+            redis.set(
+                keys.breaker(),
+                _error_record(error_code),
+                ex=LONG_BREAKER_TTL_SECONDS,
+            )
         )
     elif error_code is ProxyErrorCode.RATE_LIMITED:
-        await redis.set(
-            keys.breaker(),
-            _error_record(error_code),
-            ex=RATE_LIMIT_BREAKER_TTL_SECONDS,
+        await _run_redis_operation(
+            redis.set(
+                keys.breaker(),
+                _error_record(error_code),
+                ex=RATE_LIMIT_BREAKER_TTL_SECONDS,
+            )
         )
     else:
-        await redis.set(
-            keys.error(canonical_ip),
-            _error_record(error_code),
-            ex=TRANSIENT_ERROR_TTL_SECONDS,
+        await _run_redis_operation(
+            redis.set(
+                keys.error(canonical_ip),
+                _error_record(error_code),
+                ex=TRANSIENT_ERROR_TTL_SECONDS,
+            )
         )
 
 
@@ -319,7 +339,9 @@ async def assess_proxy(
     token = secrets.token_urlsafe(24)
     lock_key = keys.lock(canonical_ip)
     try:
-        acquired = await redis.set(lock_key, token, nx=True, ex=LOCK_TTL_SECONDS)
+        acquired = await _run_redis_operation(
+            redis.set(lock_key, token, nx=True, ex=LOCK_TTL_SECONDS)
+        )
     except Exception:  # noqa: BLE001 - every Redis client failure is fail-closed
         return ProxyAssessment.unknown(ProxyErrorCode.REDIS_UNAVAILABLE)
 
@@ -380,7 +402,9 @@ async def assess_proxy(
             post_lookup_redis_error = exc
     finally:
         try:
-            await redis.eval(COMPARE_DELETE_LUA, 1, lock_key, token)
+            await _run_redis_operation(
+                redis.eval(COMPARE_DELETE_LUA, 1, lock_key, token)
+            )
         except Exception as exc:  # noqa: BLE001 - preserve the paid result
             if post_lookup_redis_error is None:
                 post_lookup_redis_error = exc

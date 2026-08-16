@@ -32,7 +32,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    count = op.get_bind().execute(
+    connection = op.get_bind()
+    connection.execute(
+        sa.text("LOCK TABLE access_logs IN ACCESS EXCLUSIVE MODE")
+    )
+    count = connection.execute(
         sa.text("SELECT count(*) FROM access_logs WHERE proxy_error_code IS NOT NULL")
     ).scalar_one()
     if count:

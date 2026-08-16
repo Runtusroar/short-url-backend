@@ -1,13 +1,11 @@
 """Sanitized adapter for the paid MaxMind Insights service."""
 
-import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
 import aiohttp
 import geoip2.errors
 import geoip2.webservice
-
 
 ANONYMIZER_FIELDS = (
     ("is_anonymous_vpn", "anonymous_vpn"),
@@ -60,7 +58,11 @@ class MaxMindInsightsClient:
             raise InsightsLookupError(InsightsErrorKind.PERMISSION_DENIED) from None
         except geoip2.errors.AddressNotFoundError:
             raise InsightsLookupError(InsightsErrorKind.IP_NOT_FOUND) from None
-        except asyncio.TimeoutError:
+        except geoip2.errors.InvalidRequestError:
+            # assess_proxy supplies a canonical global IP, so an unrecognized
+            # 4xx service code is response-contract drift at this boundary.
+            raise InsightsLookupError(InsightsErrorKind.INVALID_RESPONSE) from None
+        except TimeoutError:
             raise InsightsLookupError(InsightsErrorKind.TIMEOUT) from None
         except aiohttp.ClientError:
             raise InsightsLookupError(InsightsErrorKind.UPSTREAM_ERROR) from None
@@ -71,23 +73,26 @@ class MaxMindInsightsClient:
                 else InsightsErrorKind.UPSTREAM_ERROR
             )
             raise InsightsLookupError(kind) from None
+        except geoip2.errors.GeoIP2Error:
+            # geoip2 4.8 uses the base error for undecodable successful JSON.
+            raise InsightsLookupError(InsightsErrorKind.INVALID_RESPONSE) from None
 
         try:
             raw = record.raw
             anonymizer = raw["anonymizer"]
             if not isinstance(anonymizer, dict):
                 raise TypeError
-            is_anonymous = anonymizer["is_anonymous"]
+            is_anonymous = anonymizer.get("is_anonymous", False)
             proxy_values = tuple(
-                (field, proxy_type)
+                (anonymizer.get(field, False), proxy_type)
                 for field, proxy_type in ANONYMIZER_FIELDS
             )
             if not isinstance(is_anonymous, bool) or any(
-                not isinstance(anonymizer[field], bool) for field, _ in proxy_values
+                not isinstance(value, bool) for value, _ in proxy_values
             ):
                 raise TypeError
             proxy_types = tuple(
-                proxy_type for field, proxy_type in proxy_values if anonymizer[field]
+                proxy_type for value, proxy_type in proxy_values if value
             )
         except (AttributeError, KeyError, TypeError):
             raise InsightsLookupError(InsightsErrorKind.INVALID_RESPONSE) from None
