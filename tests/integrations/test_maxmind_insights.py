@@ -1,6 +1,7 @@
 """Contract tests for the MaxMind Insights adapter; the network is always fake."""
 
 import asyncio
+import traceback
 from unittest.mock import AsyncMock
 
 import aiohttp
@@ -14,6 +15,7 @@ from geoip2.errors import (
     PermissionRequiredError,
 )
 from geoip2.models import Insights
+from pydantic import SecretStr
 
 from app.core.config import settings
 from app.main import lifespan
@@ -142,6 +144,18 @@ async def test_lookup_sanitizes_sdk_failures(monkeypatch, failure, kind):
     assert "response body" not in str(raised.value)
 
 
+async def test_lookup_error_traceback_redacts_upstream_message(monkeypatch):
+    secret = "never-expose-upstream-message"
+    client, fake_sdk = make_client(monkeypatch)
+    fake_sdk.insights.side_effect = HTTPError(secret, 500, "https://secret.example", secret)
+
+    with pytest.raises(InsightsLookupError) as raised:
+        await client.lookup("8.8.8.8")
+
+    formatted_traceback = "".join(traceback.format_exception(raised.value))
+    assert secret not in formatted_traceback
+
+
 @pytest.mark.parametrize("anonymizer", [None, {}, {"is_anonymous": "yes"}])
 async def test_lookup_rejects_missing_or_malformed_anonymizer(monkeypatch, anonymizer):
     client, fake_sdk = make_client(monkeypatch)
@@ -180,7 +194,7 @@ async def test_lifespan_owns_and_closes_one_enabled_insights_client(monkeypatch)
     monkeypatch.setattr(settings, "redis_url", "")
     monkeypatch.setattr(settings, "maxmind_insights_enabled", True)
     monkeypatch.setattr(settings, "maxmind_account_id", 123)
-    monkeypatch.setattr(settings, "maxmind_license_key", "secret")
+    monkeypatch.setattr(settings, "maxmind_license_key", SecretStr("secret"))
     monkeypatch.setattr(settings, "maxmind_timeout_seconds", 1.5)
     monkeypatch.setattr("app.main.MaxMindInsightsClient", FakeInsightsClient)
     monkeypatch.setattr("app.main.FastAPILimiter.init", staticmethod(fake_limiter_init))

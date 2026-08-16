@@ -55,9 +55,11 @@ async def lifespan(app: FastAPI):
         app.state.redis = None
     insights = None
     if settings.maxmind_insights_enabled:
+        assert settings.maxmind_account_id is not None
+        assert settings.maxmind_license_key is not None
         insights = MaxMindInsightsClient(
             account_id=settings.maxmind_account_id,
-            license_key=settings.maxmind_license_key,
+            license_key=settings.maxmind_license_key.get_secret_value(),
             timeout=settings.maxmind_timeout_seconds,
         )
     app.state.maxmind_insights = insights

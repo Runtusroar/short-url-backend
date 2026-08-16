@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -13,7 +13,7 @@ DEV_SECRET_VALUES = {
 
 
 class Settings(BaseSettings):
-    model_config = ConfigDict(env_file=".env", extra="ignore")
+    model_config = ConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     app_env: Literal["dev", "prod"] = "dev"
     database_url: str = "postgresql+psycopg://shorturl:shorturl@localhost:5432/shorturl"
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = False
     maxmind_insights_enabled: bool = False
     maxmind_account_id: int | None = None
-    maxmind_license_key: str | None = None
+    maxmind_license_key: SecretStr | None = None
     maxmind_timeout_seconds: float = 1.5
 
     @field_validator("maxmind_account_id", mode="before")
@@ -64,8 +64,13 @@ class Settings(BaseSettings):
     def validate_maxmind_insights(self):
         if self.maxmind_timeout_seconds <= 0:
             raise ValueError("MAXMIND_TIMEOUT_SECONDS must be greater than zero")
+        license_key = (
+            self.maxmind_license_key.get_secret_value()
+            if self.maxmind_license_key is not None
+            else ""
+        )
         if self.maxmind_insights_enabled and (
-            self.maxmind_account_id is None or not (self.maxmind_license_key or "").strip()
+            self.maxmind_account_id is None or not license_key.strip()
         ):
             raise ValueError(
                 "MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY are required when "

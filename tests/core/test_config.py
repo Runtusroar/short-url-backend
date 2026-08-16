@@ -33,7 +33,7 @@ def test_maxmind_insights_is_disabled_by_default_and_blank_account_id_is_none():
 
     assert settings.maxmind_insights_enabled is False
     assert settings.maxmind_account_id is None
-    assert settings.maxmind_license_key == ""
+    assert settings.maxmind_license_key.get_secret_value() == ""
     assert settings.maxmind_timeout_seconds == 1.5
 
 
@@ -51,8 +51,31 @@ def test_maxmind_insights_enabled_accepts_nonblank_credentials():
     )
 
     assert settings.maxmind_account_id == 123
-    assert settings.maxmind_license_key == "license-key"
+    assert settings.maxmind_license_key.get_secret_value() == "license-key"
     assert settings.maxmind_timeout_seconds == 2.5
+
+
+def test_maxmind_license_key_is_redacted_in_settings_repr():
+    secret = "never-expose-this-license-key"
+    settings = make_settings(
+        maxmind_insights_enabled=True,
+        maxmind_account_id=123,
+        maxmind_license_key=secret,
+    )
+
+    assert secret not in repr(settings)
+
+
+def test_maxmind_license_key_is_redacted_in_validation_output():
+    secret = "leak-me"
+
+    with pytest.raises(ValidationError) as raised:
+        make_settings(
+            maxmind_insights_enabled=True,
+            maxmind_license_key=secret,
+        )
+
+    assert secret not in str(raised.value)
 
 
 @pytest.mark.parametrize("timeout", [0, -1])

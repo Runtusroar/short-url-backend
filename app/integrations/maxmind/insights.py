@@ -52,25 +52,25 @@ class MaxMindInsightsClient:
     async def lookup(self, ip_address: str) -> InsightsResult:
         try:
             record = await self._client.insights(ip_address)
-        except geoip2.errors.AuthenticationError as exc:
-            raise InsightsLookupError(InsightsErrorKind.AUTH_FAILED) from exc
-        except geoip2.errors.OutOfQueriesError as exc:
-            raise InsightsLookupError(InsightsErrorKind.INSUFFICIENT_FUNDS) from exc
-        except geoip2.errors.PermissionRequiredError as exc:
-            raise InsightsLookupError(InsightsErrorKind.PERMISSION_DENIED) from exc
-        except geoip2.errors.AddressNotFoundError as exc:
-            raise InsightsLookupError(InsightsErrorKind.IP_NOT_FOUND) from exc
-        except asyncio.TimeoutError as exc:
-            raise InsightsLookupError(InsightsErrorKind.TIMEOUT) from exc
-        except aiohttp.ClientError as exc:
-            raise InsightsLookupError(InsightsErrorKind.UPSTREAM_ERROR) from exc
+        except geoip2.errors.AuthenticationError:
+            raise InsightsLookupError(InsightsErrorKind.AUTH_FAILED) from None
+        except geoip2.errors.OutOfQueriesError:
+            raise InsightsLookupError(InsightsErrorKind.INSUFFICIENT_FUNDS) from None
+        except geoip2.errors.PermissionRequiredError:
+            raise InsightsLookupError(InsightsErrorKind.PERMISSION_DENIED) from None
+        except geoip2.errors.AddressNotFoundError:
+            raise InsightsLookupError(InsightsErrorKind.IP_NOT_FOUND) from None
+        except asyncio.TimeoutError:
+            raise InsightsLookupError(InsightsErrorKind.TIMEOUT) from None
+        except aiohttp.ClientError:
+            raise InsightsLookupError(InsightsErrorKind.UPSTREAM_ERROR) from None
         except geoip2.errors.HTTPError as exc:
             kind = (
                 InsightsErrorKind.RATE_LIMITED
                 if exc.http_status == 429
                 else InsightsErrorKind.UPSTREAM_ERROR
             )
-            raise InsightsLookupError(kind) from exc
+            raise InsightsLookupError(kind) from None
 
         try:
             raw = record.raw
