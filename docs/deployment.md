@@ -48,6 +48,80 @@ Use only explicit HTTPS origins in `CORS_ORIGINS`; do not use `*`. Replace every
 placeholder above before deployment and keep the other required ports and
 settings defined by `.env.example` unless this host deliberately changes them.
 
+## GeoIP Insights proxy intelligence
+
+Proxy intelligence is disabled by default. Before enabling it, create and fund a
+MaxMind account with permission for **GeoIP Insights**. Store its account ID and
+license key only in this machine's owner-only `.env`; never commit either value,
+put it in an image, or paste it into a ticket, shell history, or logs.
+
+Set all four settings in `.env`:
+
+```dotenv
+MAXMIND_INSIGHTS_ENABLED=true
+MAXMIND_ACCOUNT_ID=<funded-insights-account-id>
+MAXMIND_LICENSE_KEY=<machine-local-license-key>
+MAXMIND_TIMEOUT_SECONDS=1.5
+```
+
+Validate the Compose interpolation without printing its secret-bearing output,
+then apply the protected schema release and start the application:
+
+```bash
+docker compose --env-file .env config >/dev/null
+make check-schema
+make migrate
+make up
+curl --fail --silent https://go.example.com/health/ready
+```
+
+To disable paid lookups, set `MAXMIND_INSIGHTS_ENABLED=false` in `.env` and run
+`make restart`. Disabling takes effect after that restart and does not remove
+existing access-log history.
+
+The redirect service calls GeoIP Insights only when the rule outcomes for the
+non-proxy and anonymous-proxy branches differ in action or matched-rule ID. A
+bot platform is assumed anonymous and does not make a paid call. Redis is the
+cost guard: a Redis outage produces the stable `redis_unavailable` error and
+makes zero paid calls. A successful proxy or non-proxy result is cached for
+86400 seconds. Per-IP transient upstream errors are cached for 120 seconds;
+the global breaker lasts 1800 seconds for `auth_failed`, `insufficient_funds`,
+and `permission_denied`, and 60 seconds for `rate_limited`. The per-IP lookup
+lock expires after 5 seconds, and a contended lock waits at most 500 ms for a
+cache result before recording `lookup_contended`.
+
+Assessments are tri-state: an unknown result is fail-open, choosing an allowed
+branch when either rule branch allows. If both actions are the same, selection
+is deterministic by rule priority and ID (with the default branch last). The
+IP blacklist is evaluated first and still overrides every proxy outcome.
+Stable `proxy_error_code` values include `disabled`, `redis_unavailable`,
+`auth_failed`, `insufficient_funds`, `permission_denied`, `rate_limited`,
+`timeout`, `upstream_error`, `invalid_response`, `ip_not_found`, `invalid_ip`,
+`non_global_ip`, and `lookup_contended`.
+
+MaxMind is not a readiness dependency: `/health/ready` checks the database and
+Redis, not the Insights service. Use the grouped counts below for operations;
+the query deliberately does not select IP addresses, credentials, or other
+request-identifying fields:
+
+```sql
+SELECT
+    proxy_check_status,
+    proxy_error_code,
+    proxy_source,
+    count(*) AS access_count
+FROM access_logs
+WHERE accessed_at >= now() - interval '15 minutes'
+GROUP BY proxy_check_status, proxy_error_code, proxy_source
+ORDER BY access_count DESC, proxy_check_status, proxy_error_code, proxy_source;
+```
+
+Alert on sustained counts of `redis_unavailable`, `auth_failed`,
+`insufficient_funds`, `permission_denied`, or `rate_limited`; investigate the
+configured Redis service, account funding, credentials, permissions, or rate
+limits respectively. Do not attach a Compose render, `.env`, IP addresses, or
+credentials to the alert or its ticket.
+
 ## First deployment
 
 Run these commands from the repository root. Replace the domain and credentials
@@ -56,8 +130,9 @@ the operator's secret store.
 
 ```bash
 make check-config
-make up
+make check-schema
 make migrate
+make up
 make create-domain d=go.example.com
 make create-admin u=admin p='replace-with-a-strong-password'
 ```
@@ -232,6 +307,7 @@ sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" "$BACKUP_DIR"
 umask 077
 docker compose exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "$BACKUP_DIR/postgres-before-update-$(date +%F-%H%M%S).sql"
 make build
+make check-schema
 make migrate
 make up
 ```
@@ -261,3 +337,5 @@ make up
 
 Repeat the verification steps. Do not downgrade the database unless the target
 release documents a migration procedure that explicitly supports that downgrade.
+Do not downgrade past persisted non-null `proxy_error_code` values: the Phase 6
+migration refuses that downgrade before changing schema or revision state.

@@ -68,6 +68,19 @@ def test_restart_recreates_app_after_config_validation():
     assert "Use `make up` for normal deployments and updates" in text
 
 
+def test_proxy_intelligence_runbook_keeps_the_protected_release_order():
+    text = DOC.read_text()
+    update = text.split("## Update", maxsplit=1)[1].split("## Rollback", maxsplit=1)[0]
+
+    backup = update.index('pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"')
+    schema_check = update.index("make check-schema")
+    migrate = update.index("make migrate")
+    up = update.index("make up")
+
+    assert backup < schema_check < migrate < up
+    assert "Do not downgrade past persisted non-null `proxy_error_code` values" in text
+
+
 def test_verification_distinguishes_access_output_from_persisted_request_facts():
     text = DOC.read_text()
     compact = " ".join(text.split())
