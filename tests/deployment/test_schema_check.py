@@ -430,13 +430,25 @@ def test_post_reports_ready_final_contract():
 
 def test_post_requires_pg_trgm_and_known_operator_classes():
     assert _evaluate(extensions=set())["error_code"] == "required_extension_missing"
-    assert _evaluate(index_operator_classes=None)["error_code"] == "index_operator_class_unknown"
+    assert (
+        _evaluate(index_operator_classes=None)["error_code"]
+        == "index_operator_class_unknown"
+    )
     operator_classes = _ready_operator_classes()
     operator_classes["short_links"]["idx_short_links_domain_code_pattern"] = (
         "",
         "text_pattern_ops",
     )
-    assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"
+    assert (
+        _evaluate(index_operator_classes=operator_classes)["error_code"]
+        == "index_operator_class_mismatch"
+    )
+    operator_classes = _ready_operator_classes()
+    operator_classes["short_links"]["idx_short_links_name_trgm"] = ("text_ops",)
+    assert (
+        _evaluate(index_operator_classes=operator_classes)["error_code"]
+        == "index_operator_class_mismatch"
+    )
 
 
 def test_pre_rejects_same_named_canonical_check_with_wrong_definition():
@@ -505,9 +517,6 @@ def test_cli_pre_rejects_phase_four_access_log_fk_drift(
     result = _run_schema_check(migration_database_url, "pre")
     assert result.returncode == 1
     assert _public_json(result, migration_database_url)["error_code"] == error_code
-    operator_classes = _ready_operator_classes()
-    operator_classes["short_links"]["idx_short_links_name_trgm"] = ("text_ops",)
-    assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"
 
 
 @pytest.mark.parametrize("mode", ("pre", "post"))
@@ -615,6 +624,14 @@ def test_cli_rejects_each_final_index_with_wrong_columns(
 @pytest.mark.parametrize(
     ("name", "columns"),
     [
+        (
+            "idx_short_links_domain_created_at",
+            "domain_id, created_at",
+        ),
+        (
+            "idx_short_links_domain_owner_created_at",
+            "domain_id, owner_id, created_at",
+        ),
         ("idx_access_logs_domain_accessed_at", "domain_id, accessed_at, id"),
         ("idx_access_logs_link_accessed_at", "short_link_id, accessed_at, id"),
         ("idx_access_logs_link_access_date", "short_link_id, access_date"),
@@ -628,15 +645,16 @@ def test_cli_rejects_each_final_index_with_wrong_columns(
         ),
     ],
 )
-def test_cli_rejects_each_descending_access_log_index_replaced_by_ascending(
+def test_cli_rejects_each_descending_final_index_replaced_by_ascending(
     migration_database_url, mode, name, columns
 ):
     run_alembic(migration_database_url, "upgrade", "head")
+    table = "short_links" if name.startswith("idx_short_links_") else "access_logs"
     engine = create_engine(migration_database_url)
     try:
         with engine.begin() as connection:
             connection.execute(text(f"DROP INDEX {name}"))
-            connection.execute(text(f"CREATE INDEX {name} ON access_logs ({columns})"))
+            connection.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
     finally:
         engine.dispose()
 
@@ -644,7 +662,32 @@ def test_cli_rejects_each_descending_access_log_index_replaced_by_ascending(
     assert result.returncode == 1
     payload = _public_json(result, migration_database_url)
     assert payload["error_code"] == "index_sorting_mismatch"
-    assert payload["detail"] == f"access_logs.{name}"
+    assert payload["detail"] == f"{table}.{name}"
+
+
+@pytest.mark.parametrize("mode", ("pre", "post"))
+def test_cli_rejects_same_named_domain_code_index_with_wrong_operator_class(
+    migration_database_url, mode
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("DROP INDEX idx_short_links_domain_code_pattern"))
+            connection.execute(
+                text(
+                    "CREATE INDEX idx_short_links_domain_code_pattern "
+                    "ON short_links (domain_id, short_code)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    result = _run_schema_check(migration_database_url, mode)
+    assert result.returncode == 1
+    payload = _public_json(result, migration_database_url)
+    assert payload["error_code"] == "index_operator_class_mismatch"
+    assert payload["detail"] == "short_links.idx_short_links_domain_code_pattern"
 
 
 @pytest.mark.parametrize("mode", ("pre", "post"))

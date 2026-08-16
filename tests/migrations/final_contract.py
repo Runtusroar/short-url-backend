@@ -1,4 +1,4 @@
-"""Independent literal Phase 4 PostgreSQL contract.
+"""Independent literal Phase 5 PostgreSQL contract.
 
 This module intentionally imports no application model, migration, or schema
 checker.  Constraint-backed unique indexes are recorded in ``unique_constraints``
@@ -13,6 +13,46 @@ def column(type_name, nullable, default=None, timezone=None):
         "default": default,
         "timezone": timezone,
     }
+
+
+FINAL_ORM_INDEX_COLUMNS = {
+    "short_links": {
+        "idx_short_links_domain_created_at": ("domain_id", "created_at"),
+        "idx_short_links_domain_owner_created_at": (
+            "domain_id",
+            "owner_id",
+            "created_at",
+        ),
+        "idx_short_links_name_trgm": ("name",),
+        "idx_short_links_domain_code_pattern": ("domain_id", "short_code"),
+    },
+    "access_logs": {
+        "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at", "id"),
+        "idx_access_logs_link_accessed_at": (
+            "short_link_id",
+            "accessed_at",
+            "id",
+        ),
+        "idx_access_logs_link_access_date": ("short_link_id", "access_date"),
+        "idx_access_logs_link_client_ip_dedup": (
+            "short_link_id",
+            "client_ip",
+            "dedup_bucket",
+        ),
+        "idx_access_logs_domain_result_accessed_at": (
+            "domain_id",
+            "result",
+            "accessed_at",
+            "id",
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "domain_id",
+            "country",
+            "accessed_at",
+            "id",
+        ),
+    },
+}
 
 
 FINAL_SCHEMA_CONTRACT = {

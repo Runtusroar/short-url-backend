@@ -161,6 +161,53 @@ Also confirm that `configured_domain` identifies `go.example.com`. These fields
 are stored request facts for the redirect; they are separate from the Uvicorn
 access line.
 
+## Search access logs
+
+Authenticated operators and clients can search with `GET /api/logs`. Short codes
+are stored in canonical lowercase, while request paths are case-insensitive at
+the application boundary. Operator and client results are permission-scoped, so
+the API returns only records visible to the authenticated user.
+
+Request a first page with the required domain context and any supported filters:
+
+```bash
+curl -G 'https://go.example.com/api/logs' \
+  -H 'Authorization: Bearer <token>' \
+  --data-urlencode 'short_code=promo' \
+  --data-urlencode 'name=八月' \
+  --data-urlencode 'country=CN' \
+  --data-urlencode 'country=US' \
+  --data-urlencode 'result=allowed' \
+  --data-urlencode 'result=denied' \
+  --data-urlencode 'date_from=2026-08-01' \
+  --data-urlencode 'date_to=2026-08-07' \
+  --data-urlencode 'limit=50'
+```
+
+Repeated filters are encoded as `country=CN&country=US` and
+`result=allowed&result=denied`. Results are sorted by
+`accessed_at DESC, id DESC`. The response includes `has_more` and, when another
+page exists, `next_cursor`; it intentionally returns no total count.
+
+Cursor values are opaque. Pass `next_cursor` unchanged as `cursor`, and filters
+must not change while following a cursor. For example, request the next page
+with the identical filters:
+
+```bash
+curl -G 'https://go.example.com/api/logs' \
+  -H 'Authorization: Bearer <token>' \
+  --data-urlencode 'short_code=promo' \
+  --data-urlencode 'name=八月' \
+  --data-urlencode 'country=CN' \
+  --data-urlencode 'country=US' \
+  --data-urlencode 'result=allowed' \
+  --data-urlencode 'result=denied' \
+  --data-urlencode 'date_from=2026-08-01' \
+  --data-urlencode 'date_to=2026-08-07' \
+  --data-urlencode 'limit=50' \
+  --data-urlencode 'cursor=<next_cursor>'
+```
+
 Use `make up` for normal deployments and updates. `make restart` validates
 configuration and force-recreates the app container, so `.env` changes take
 effect. Use it for an in-place restart of an existing release after a verified

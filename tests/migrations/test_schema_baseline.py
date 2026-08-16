@@ -2,39 +2,8 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from app.models import AccessLog, ShortLink
+from tests.migrations.final_contract import FINAL_ORM_INDEX_COLUMNS
 from tests.migrations.support import get_schema_contract, run_alembic
-
-EXPECTED = {
-    "short_links": {
-        "idx_short_links_domain_created_at": ("domain_id", "created_at"),
-        "idx_short_links_domain_owner_created_at": (
-            "domain_id",
-            "owner_id",
-            "created_at",
-        ),
-    },
-    "access_logs": {
-        "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at"),
-        "idx_access_logs_link_accessed_at": ("short_link_id", "accessed_at"),
-        "idx_access_logs_link_access_date": ("short_link_id", "access_date"),
-        "idx_access_logs_link_client_ip_dedup": (
-            "short_link_id",
-            "client_ip",
-            "dedup_bucket",
-        ),
-        "idx_access_logs_domain_result_accessed_at": (
-            "domain_id",
-            "result",
-            "accessed_at",
-        ),
-        "idx_access_logs_domain_country_accessed_at": (
-            "domain_id",
-            "country",
-            "accessed_at",
-        ),
-    },
-}
-
 
 def index_map(table):
     return {
@@ -43,9 +12,9 @@ def index_map(table):
     }
 
 
-def test_orm_declares_final_phase_four_indexes():
-    assert index_map(ShortLink.__table__) == EXPECTED["short_links"]
-    assert index_map(AccessLog.__table__) == EXPECTED["access_logs"]
+def test_orm_declares_final_literal_indexes():
+    for table in (ShortLink.__table__, AccessLog.__table__):
+        assert index_map(table) == FINAL_ORM_INDEX_COLUMNS[table.name]
 
 
 def test_phase_three_revision_keeps_the_five_repaired_indexes(migration_database_url):
@@ -61,6 +30,9 @@ def test_phase_three_revision_keeps_the_five_repaired_indexes(migration_database
             "unique": False,
             "sorting": {},
             "predicate": None,
+            "using": "btree",
+            "expressions": (),
+            "operator_classes": ("",),
         }
     }
     assert {

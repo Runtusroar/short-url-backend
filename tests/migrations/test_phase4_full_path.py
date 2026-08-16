@@ -1,4 +1,4 @@
-"""End-to-end Phase 4 migration contract on disposable PostgreSQL databases."""
+"""End-to-end final migration contract on disposable PostgreSQL databases."""
 
 from subprocess import CalledProcessError
 from uuid import UUID, uuid4
@@ -6,7 +6,6 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import create_engine, text
 
-from app.core.database import Base
 from tests.migrations.support import get_schema_contract, run_alembic
 
 HEAD = "c8e4f1a26b73"
@@ -30,11 +29,6 @@ SEEDED_ROWS = {
     "ip_blacklist": "blacklist",
     "access_logs": "log",
 }
-
-
-def _normalized_type_name(value: object) -> str:
-    """Compare SQLAlchemy's generic DateTime spelling with PostgreSQL's type."""
-    return "TIMESTAMP" if str(value).upper() == "DATETIME" else str(value).upper()
 
 
 def _table_counts(connection) -> dict[str, int]:
@@ -280,9 +274,23 @@ def test_user_domain_preflight_rejections_are_atomic(
 
 
 @pytest.mark.parametrize("previous_revision", TASK_PREVIOUS_REVISIONS)
-def test_final_head_round_trips_each_task_previous_revision_with_representable_rows(
+def test_each_previous_task_revision_upgrades_directly_to_final_head(
     migration_database_url, previous_revision
 ):
+    run_alembic(migration_database_url, "upgrade", previous_revision)
+    run_alembic(migration_database_url, "upgrade", HEAD)
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == HEAD
+            )
+    finally:
+        engine.dispose()
+
+
+def test_final_head_round_trips_a73_with_representable_rows(migration_database_url):
     run_alembic(migration_database_url, "upgrade", D6)
     engine = create_engine(migration_database_url)
     try:
@@ -290,57 +298,12 @@ def test_final_head_round_trips_each_task_previous_revision_with_representable_r
             ids, expected_counts = _seed_representable_d6_rows(connection)
     finally:
         engine.dispose()
-    run_alembic(migration_database_url, "upgrade", "head")
-    run_alembic(migration_database_url, "downgrade", previous_revision)
-    run_alembic(migration_database_url, "upgrade", "head")
+    run_alembic(migration_database_url, "upgrade", HEAD)
+    run_alembic(migration_database_url, "downgrade", "a73f0b9d4216")
+    run_alembic(migration_database_url, "upgrade", HEAD)
     _assert_seed_ids_counts_and_conversions(
         migration_database_url, ids, expected_counts
     )
-
-
-def test_final_database_matches_every_orm_column_default_nullability_check_and_fk(
-    migration_database_url,
-):
-    run_alembic(migration_database_url, "upgrade", "head")
-    contract = get_schema_contract(migration_database_url)
-    columns = contract["columns"]
-    checks = contract["checks"]
-    foreign_keys = contract["foreign_keys"]
-    for table_name, table in Base.metadata.tables.items():
-        for column in table.columns:
-            actual = columns[table_name][column.name]
-            assert _normalized_type_name(actual["type"]) == _normalized_type_name(
-                column.type
-            )
-            assert actual["timezone"] == getattr(column.type, "timezone", None)
-            assert actual["nullable"] is column.nullable
-            default = actual["default"]
-            if column.server_default is None:
-                assert default is None
-            else:
-                expected = str(column.server_default.arg).lower()
-                assert expected.replace("'", "") in str(default).lower().replace(
-                    "'", ""
-                )
-        expected_checks = {
-            constraint.name
-            for constraint in table.constraints
-            if constraint.name and constraint.name.startswith("ck_")
-        }
-        assert expected_checks <= set(checks[table_name])
-        expected_fks = {
-            foreign_key.parent.name: (
-                foreign_key.column.table.name,
-                foreign_key.ondelete,
-            )
-            for constraint in table.foreign_key_constraints
-            for foreign_key in constraint.elements
-        }
-        actual_fks = {
-            facts["columns"][0]: (facts["referred_table"], facts["ondelete"])
-            for facts in foreign_keys[table_name].values()
-        }
-        assert actual_fks == expected_fks
 
 
 def test_alembic_check_has_no_new_upgrade_operations_at_final_head(

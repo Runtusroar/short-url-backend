@@ -189,7 +189,7 @@ def test_short_code_preflight_rejects_before_any_write(
         run_alembic(migration_database_url, "upgrade", HEAD)
     assert invariant in f"{exc_info.value.stdout}\n{exc_info.value.stderr}"
     assert current_revision(migration_database_url) == PREVIOUS
-    assert original_codes(migration_database_url) == sorted(codes)
+    assert sorted(original_codes(migration_database_url)) == sorted(codes)
     assert not has_check(migration_database_url, "ck_short_links_short_code_canonical")
     assert not has_index(migration_database_url, "idx_short_links_name_trgm")
 

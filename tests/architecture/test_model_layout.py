@@ -12,6 +12,7 @@ from app.models import (
     User,
     UserDomain,
 )
+from tests.migrations.final_contract import FINAL_SCHEMA_CONTRACT
 
 
 def test_models_live_in_focused_modules_and_are_reexported():
@@ -48,49 +49,14 @@ def test_table_names_are_unchanged():
 
 def test_final_orm_schema_declares_named_checks_indexes_and_delete_actions():
     expected_indexes = {
-        "domains": {"uq_domains_one_default"},
-        "user_domains": {"idx_user_domains_domain"},
-        "short_links": {
-            "idx_short_links_domain_created_at",
-            "idx_short_links_domain_owner_created_at",
-        },
-        "access_rules": {"idx_access_rules_link_active_priority"},
-        "ip_blacklist": {"idx_ip_blacklist_active_expires_at"},
-        "access_logs": {
-            "idx_access_logs_domain_accessed_at",
-            "idx_access_logs_link_accessed_at",
-            "idx_access_logs_link_access_date",
-            "idx_access_logs_link_client_ip_dedup",
-            "idx_access_logs_domain_result_accessed_at",
-            "idx_access_logs_domain_country_accessed_at",
-        },
+        table_name: set(contract["indexes"])
+        for table_name, contract in FINAL_SCHEMA_CONTRACT.items()
+        if contract["indexes"]
     }
     expected_checks = {
-        "users": {"ck_users_role", "ck_users_username_lower"},
-        "domains": {"ck_domains_name_lower_host"},
-        "short_links": {
-            "ck_short_links_default_action",
-            "ck_short_links_deleted_actor",
-        },
-        "target_urls": {"ck_target_urls_type", "ck_target_urls_weight"},
-        "access_rules": {
-            "ck_access_rules_action",
-            "ck_access_rules_client_requirement",
-            "ck_access_rules_proxy_requirement",
-            "ck_access_rules_countries_array",
-            "ck_access_rules_ua_platforms_array",
-            "ck_access_rules_referer_patterns_array",
-        },
-        "ip_blacklist": {"ck_ip_blacklist_reason", "ck_ip_blacklist_removed_actor"},
-        "access_logs": {
-            "ck_access_logs_result",
-            "ck_access_logs_country",
-            "ck_access_logs_decision_reason",
-            "ck_access_logs_request_method",
-            "ck_access_logs_proxy_check_status",
-            "ck_access_logs_proxy_source",
-            "ck_access_logs_proxy_types_array",
-        },
+        table_name: set(contract["checks"])
+        for table_name, contract in FINAL_SCHEMA_CONTRACT.items()
+        if contract["checks"]
     }
     for table_name, names in expected_indexes.items():
         assert {
