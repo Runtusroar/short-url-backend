@@ -1,5 +1,3 @@
-# ruff: noqa: F811
-
 import json
 import os
 import subprocess
@@ -14,7 +12,6 @@ from scripts.check_schema import (
     EXPECTED_ONDELETE,
     evaluate_schema,
 )
-from tests.migrations.conftest import migration_database_url  # noqa: F401
 from tests.migrations.support import run_alembic
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -139,6 +136,8 @@ def test_pre_rejects_same_named_wrong_index_columns():
         indexes=indexes,
         target_url_ondelete="SET NULL",
         index_uniqueness=EXPECTED_UNIQUENESS,
+        index_sorting=_ready_sorting(),
+        foreign_key_actions=_ready_foreign_keys(),
     )
 
     assert result["status"] == "error"
@@ -159,6 +158,8 @@ def test_pre_rejects_same_named_unique_index():
         indexes=EXPECTED_INDEXES,
         target_url_ondelete="SET NULL",
         index_uniqueness=uniqueness,
+        index_sorting=_ready_sorting(),
+        foreign_key_actions=_ready_foreign_keys(),
     )
 
     assert result["status"] == "error"
@@ -186,6 +187,8 @@ def test_pre_rejects_present_index_with_unknown_uniqueness(index_uniqueness):
         indexes=EXPECTED_INDEXES,
         target_url_ondelete="SET NULL",
         index_uniqueness=index_uniqueness,
+        index_sorting=_ready_sorting(),
+        foreign_key_actions=_ready_foreign_keys(),
     )
 
     assert result["status"] == "error"
@@ -196,6 +199,88 @@ def test_pre_rejects_present_index_with_unknown_uniqueness(index_uniqueness):
         else "access_logs.idx_access_logs_link_access_date"
     )
     assert result["detail"] == expected_detail
+
+
+@pytest.mark.parametrize(
+    "index_name",
+    [
+        "idx_access_logs_domain_accessed_at",
+        "idx_access_logs_link_accessed_at",
+        "idx_access_logs_link_access_date",
+        "idx_access_logs_domain_result_accessed_at",
+        "idx_access_logs_domain_country_accessed_at",
+    ],
+)
+def test_pre_rejects_complete_final_indexes_with_ascending_sorting(index_name):
+    sorting = _ready_sorting()
+    sorting["access_logs"][index_name] = {}
+
+    result = evaluate_schema(
+        mode="pre",
+        tables=APPLICATION_TABLES,
+        indexes=EXPECTED_INDEXES,
+        target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
+        index_sorting=sorting,
+        foreign_key_actions=_ready_foreign_keys(),
+    )
+
+    assert result["error_code"] == "index_sorting_mismatch"
+    assert result["detail"] == f"access_logs.{index_name}"
+
+
+@pytest.mark.parametrize(
+    ("sorting", "foreign_keys", "error_code"),
+    [
+        (None, _ready_foreign_keys(), "index_sorting_unknown"),
+        (_ready_sorting(), None, "access_log_foreign_key_unknown"),
+    ],
+)
+def test_pre_fails_closed_for_complete_final_schema_unknown_metadata(
+    sorting, foreign_keys, error_code
+):
+    result = evaluate_schema(
+        mode="pre",
+        tables=APPLICATION_TABLES,
+        indexes=EXPECTED_INDEXES,
+        target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
+        index_sorting=sorting,
+        foreign_key_actions=foreign_keys,
+    )
+
+    assert result["error_code"] == error_code
+
+
+@pytest.mark.parametrize("foreign_key", sorted(EXPECTED_ONDELETE))
+def test_pre_rejects_complete_final_schema_with_each_wrong_foreign_key(foreign_key):
+    foreign_keys = _ready_foreign_keys()
+    foreign_keys[foreign_key] = "CASCADE"
+
+    result = evaluate_schema(
+        mode="pre",
+        tables=APPLICATION_TABLES,
+        indexes=EXPECTED_INDEXES,
+        target_url_ondelete="SET NULL",
+        index_uniqueness=EXPECTED_UNIQUENESS,
+        index_sorting=_ready_sorting(),
+        foreign_key_actions=foreign_keys,
+    )
+
+    assert result["error_code"] == "access_log_foreign_key_mismatch"
+    assert result["detail"] == f"access_logs.{foreign_key}"
+
+
+def test_pre_keeps_missing_final_indexes_repairable_without_final_metadata():
+    result = evaluate_schema(
+        mode="pre",
+        tables=APPLICATION_TABLES,
+        indexes={"access_logs": {}},
+        target_url_ondelete=None,
+    )
+
+    assert result["status"] == "ok"
+    assert result["schema"] == "repairable"
 
 
 def test_post_requires_every_expected_index():
@@ -436,6 +521,65 @@ def test_cli_post_requires_and_reports_repaired_head(migration_database_url):
         "indexes": "valid",
         "target_url_ondelete": "SET NULL",
     }
+
+
+@pytest.mark.parametrize(
+    ("index_name", "columns"),
+    [
+        ("idx_access_logs_domain_accessed_at", "domain_id, accessed_at"),
+        ("idx_access_logs_link_accessed_at", "short_link_id, accessed_at"),
+        ("idx_access_logs_link_access_date", "short_link_id, access_date"),
+        ("idx_access_logs_domain_result_accessed_at", "domain_id, result, accessed_at"),
+        ("idx_access_logs_domain_country_accessed_at", "domain_id, country, accessed_at"),
+    ],
+)
+def test_cli_pre_rejects_complete_final_schema_with_ascending_index(
+    migration_database_url, index_name, columns
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"DROP INDEX {index_name}"))
+            connection.execute(text(f"CREATE INDEX {index_name} ON access_logs ({columns})"))
+    finally:
+        engine.dispose()
+
+    result = run_schema_check(migration_database_url, "pre")
+
+    assert result.returncode == 1
+    assert assert_single_public_json(result, migration_database_url)["error_code"] == "index_sorting_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("constraint", "column", "parent_table"),
+    [
+        ("fk_access_logs_short_link", "short_link_id", "short_links"),
+        ("fk_access_logs_domain", "domain_id", "domains"),
+        ("fk_access_logs_target_url", "target_url_id", "target_urls"),
+        ("fk_access_logs_matched_rule", "matched_rule_id", "access_rules"),
+    ],
+)
+def test_cli_pre_rejects_complete_final_schema_with_wrong_foreign_key(
+    migration_database_url, constraint, column, parent_table
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE access_logs DROP CONSTRAINT {constraint}"))
+            connection.execute(text(
+                "ALTER TABLE access_logs "
+                f"ADD CONSTRAINT {constraint} FOREIGN KEY ({column}) "
+                f"REFERENCES {parent_table}(id) ON DELETE CASCADE"
+            ))
+    finally:
+        engine.dispose()
+
+    result = run_schema_check(migration_database_url, "pre")
+
+    assert result.returncode == 1
+    assert assert_single_public_json(result, migration_database_url)["error_code"] == "access_log_foreign_key_mismatch"
 
 
 @pytest.mark.parametrize(

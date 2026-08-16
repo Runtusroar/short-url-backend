@@ -167,7 +167,9 @@ def evaluate_schema(
                     indexes="invalid",
                     target_url_ondelete=normalized_ondelete,
                 )
-            if mode == "post":
+            # A same-named final index is no longer historical ambiguity: even
+            # preflight must reject unknown or wrong ordering for that object.
+            if mode in {"pre", "post"}:
                 if index_sorting is None:
                     return _error(
                         mode=mode,
@@ -198,7 +200,11 @@ def evaluate_schema(
             target_url_ondelete=normalized_ondelete,
         )
 
-    if mode == "post":
+    # A partial final-index set can still be repaired by the Task5 migration.
+    # Once every final index exists, its four explicit access-log FK actions
+    # are final schema facts and must be complete and exact in preflight too.
+    has_complete_final_indexes = not missing_indexes
+    if mode == "post" or has_complete_final_indexes:
         if foreign_key_actions is None:
             return _error(
                 mode=mode,
