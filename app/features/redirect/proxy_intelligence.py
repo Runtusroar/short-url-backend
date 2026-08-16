@@ -339,6 +339,13 @@ async def assess_proxy(
     post_lookup_redis_error: Exception | None = None
     try:
         try:
+            cached = await _read_cached_assessment(redis, canonical_ip, keys)
+        except Exception:  # noqa: BLE001 - every Redis failure stops lookup
+            return ProxyAssessment.unknown(ProxyErrorCode.REDIS_UNAVAILABLE)
+        if cached is not None:
+            return cached
+
+        try:
             result = await insights.lookup(canonical_ip)
         except InsightsLookupError as exc:
             error_code = ProxyErrorCode(exc.kind.value)

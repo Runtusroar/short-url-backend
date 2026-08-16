@@ -588,6 +588,104 @@ class CountingRedis:
         return await self.delegate.eval(*args, **kwargs)
 
 
+class DelayedLockRedis:
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.lock_attempted = asyncio.Event()
+        self.allow_lock_attempt = asyncio.Event()
+
+    async def get(self, *args, **kwargs):
+        return await self.delegate.get(*args, **kwargs)
+
+    async def set(self, key, value, **kwargs):
+        if kwargs.get("nx") is True:
+            self.lock_attempted.set()
+            await self.allow_lock_attempt.wait()
+        return await self.delegate.set(key, value, **kwargs)
+
+    async def eval(self, *args, **kwargs):
+        return await self.delegate.eval(*args, **kwargs)
+
+
+async def test_delayed_lock_winner_rereads_cache_before_paid_lookup(redis_case):
+    delayed_redis = DelayedLockRedis(redis_case.redis)
+    insights = StubInsights(result=InsightsResult(True, ("anonymous_vpn",)))
+    delayed_task = asyncio.create_task(
+        assess_proxy(
+            delayed_redis,
+            insights,
+            GLOBAL_IPV4,
+            "browser",
+            enabled=True,
+            lookup_required=True,
+            keyspace=redis_case.keyspace,
+        )
+    )
+
+    await asyncio.wait_for(delayed_redis.lock_attempted.wait(), timeout=1)
+    winner = await assess_proxy(
+        redis_case.redis,
+        insights,
+        GLOBAL_IPV4,
+        "browser",
+        enabled=True,
+        lookup_required=True,
+        keyspace=redis_case.keyspace,
+    )
+    assert await redis_case.redis.exists(redis_case.keyspace.lock(GLOBAL_IPV4)) == 0
+    delayed_redis.allow_lock_attempt.set()
+    delayed = await asyncio.wait_for(delayed_task, timeout=1)
+
+    assert insights.calls == 1
+    assert winner.status is ProxyCheckStatus.CHECKED
+    assert delayed.status is ProxyCheckStatus.CACHED
+    assert delayed.is_anonymous is True
+
+
+class FailingPostLockReadRedis:
+    def __init__(self, delegate, lock_key):
+        self.delegate = delegate
+        self.lock_key = lock_key
+        self.lock_acquired = False
+
+    async def get(self, *args, **kwargs):
+        if self.lock_acquired:
+            await self.delegate.set(self.lock_key, "replacement-owner", ex=5)
+            raise ConnectionError("redis-user:redis-password")
+        return await self.delegate.get(*args, **kwargs)
+
+    async def set(self, key, value, **kwargs):
+        result = await self.delegate.set(key, value, **kwargs)
+        if kwargs.get("nx") is True and result:
+            self.lock_acquired = True
+        return result
+
+    async def eval(self, *args, **kwargs):
+        return await self.delegate.eval(*args, **kwargs)
+
+
+async def test_post_lock_read_failure_suppresses_lookup_and_releases_token_safely(
+    redis_case,
+):
+    lock_key = redis_case.keyspace.lock(GLOBAL_IPV4)
+    failing_redis = FailingPostLockReadRedis(redis_case.redis, lock_key)
+    insights = StubInsights(result=InsightsResult(True, ("anonymous_vpn",)))
+
+    result = await assess_proxy(
+        failing_redis,
+        insights,
+        GLOBAL_IPV4,
+        "browser",
+        enabled=True,
+        lookup_required=True,
+        keyspace=redis_case.keyspace,
+    )
+
+    assert result == ProxyAssessment.unknown(ProxyErrorCode.REDIS_UNAVAILABLE)
+    assert insights.calls == 0
+    assert await redis_case.redis.get(lock_key) == "replacement-owner"
+
+
 async def test_twenty_concurrent_callers_use_one_paid_lookup(redis_case):
     callers = 20
     counted_redis = CountingRedis(redis_case.redis, callers)
