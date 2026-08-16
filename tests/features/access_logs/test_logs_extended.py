@@ -6,9 +6,15 @@ from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.features.access_logs.cursor import decode_cursor
+from app.features.access_logs.query import AccessLogFilters
+from app.features.access_logs.service import list_logs as list_logs_query
+from app.models import AccessLog, Domain, ShortLink, User
 from tests.conftest import _sync_engine
 
 
@@ -324,6 +330,33 @@ async def test_logs_pagination(
     assert len(resp.json()["items"]) == 1
 
 
+@pytest.mark.parametrize("cursor", ("", "x" * 2049))
+async def test_invalid_cursor_never_restarts_from_the_first_page(
+    client: AsyncClient,
+    admin_token: str,
+    default_domain: dict,
+    cursor: str,
+):
+    link = await _create_link_and_log(client, admin_token, default_domain["id"])
+
+    first_page = await client.get(
+        "/api/logs",
+        headers={**_auth(admin_token), **_host()},
+        params={"short_link_id": link["id"], "limit": 1},
+    )
+    assert first_page.status_code == 200
+    assert first_page.json()["has_more"] is True
+
+    response = await client.get(
+        "/api/logs",
+        headers={**_auth(admin_token), **_host()},
+        params={"short_link_id": link["id"], "limit": 1, "cursor": cursor},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"code": "INVALID_CURSOR", "message": "无效的分页游标"}
+
+
 async def test_logs_preserve_rule_and_target_snapshots_after_management_changes(
     client: AsyncClient, admin_token: str, default_domain: dict
 ):
@@ -516,6 +549,66 @@ async def test_short_code_filter_normalizes_uppercase_and_rejects_sql_wildcards(
     )
     assert wildcard.status_code == 400
     assert wildcard.json()["code"] == "VALIDATION_ERROR"
+
+
+async def test_short_code_filter_treats_legal_underscore_as_a_literal_prefix(
+    client, admin_token, default_domain
+):
+    suffix = uuid4().hex[:8]
+    underscore_link = await _create_named_link(
+        client,
+        admin_token,
+        default_domain["id"],
+        alias=f"promo_{suffix}",
+        name="Underscore Prefix Campaign",
+    )
+    nonmatching_link = await _create_named_link(
+        client,
+        admin_token,
+        default_domain["id"],
+        alias=f"promoa{suffix}",
+        name="Letter Prefix Campaign",
+    )
+    for log_id, link_id, hour in (
+        (uuid4(), underscore_link["id"], 12),
+        (uuid4(), nonmatching_link["id"], 11),
+    ):
+        _insert_access_log(
+            log_id=log_id,
+            short_link_id=link_id,
+            domain_id=default_domain["id"],
+            accessed_at=datetime(2026, 8, 16, hour, tzinfo=timezone.utc),
+            access_date=date(2026, 8, 16),
+            country="CN",
+            result="allowed",
+        )
+
+    with _sync_engine.connect() as connection:
+        unescaped_codes = set(
+            connection.scalars(
+                select(ShortLink.short_code).where(
+                    ShortLink.id.in_(
+                        (UUID(underscore_link["id"]), UUID(nonmatching_link["id"]))
+                    ),
+                    ShortLink.short_code.startswith("promo_", autoescape=False),
+                )
+            )
+        )
+    assert unescaped_codes == {
+        underscore_link["short_code"],
+        nonmatching_link["short_code"],
+    }
+
+    response = await client.get(
+        "/api/logs",
+        params={"short_code": "promo_"},
+        headers={**_auth(admin_token), **_host()},
+    )
+
+    assert response.status_code == 200, response.text
+    assert {row["short_link_name"] for row in response.json()["items"]} == {
+        "Underscore Prefix Campaign"
+    }
 
 
 @pytest.mark.parametrize(
@@ -881,6 +974,66 @@ async def test_keyset_pages_same_timestamp_by_descending_uuid_without_duplicates
         cursor = page["next_cursor"]
     assert tuple(actual_ids) == keyset_records.descending_ids
     assert len(actual_ids) == len(set(actual_ids))
+
+
+async def test_cursor_boundary_is_normalized_from_a_non_utc_postgres_session(
+    keyset_records,
+):
+    timezone_engine = create_async_engine(
+        settings.database_url.replace("+asyncpg", "+psycopg"),
+        poolclass=NullPool,
+    )
+    sessions = async_sessionmaker(timezone_engine, expire_on_commit=False)
+    try:
+        async with sessions() as db:
+            await db.execute(text("SET TIME ZONE 'America/New_York'"))
+            current_user = (
+                await db.execute(select(User).where(User.username == "admin"))
+            ).scalar_one()
+            current_domain = (
+                await db.execute(
+                    select(Domain).where(Domain.id == UUID(keyset_records.domain_id))
+                )
+            ).scalar_one()
+            database_timestamp = (
+                await db.execute(
+                    select(AccessLog.accessed_at).where(
+                        AccessLog.id == UUID(keyset_records.descending_ids[0])
+                    )
+                )
+            ).scalar_one()
+            assert database_timestamp.utcoffset() != timedelta(0)
+
+            filters = AccessLogFilters.from_values(
+                short_link_id=None,
+                short_code=None,
+                name=keyset_records.name,
+                date_from=None,
+                date_to=None,
+                countries=[],
+                results=[],
+            )
+            page = await list_logs_query(
+                db,
+                current_user,
+                current_domain,
+                None,
+                filters,
+                2,
+                None,
+            )
+
+            assert page.has_more is True
+            assert page.next_cursor is not None
+            boundary = decode_cursor(
+                page.next_cursor,
+                filters.digest_scope(current_domain.id, current_user),
+                settings.secret_key,
+            )
+            assert boundary.accessed_at == keyset_records.accessed_at
+            assert boundary.accessed_at.utcoffset() == timedelta(0)
+    finally:
+        await timezone_engine.dispose()
 
 
 async def test_old_cursor_ignores_newer_insert_and_starts_after_page_tail(

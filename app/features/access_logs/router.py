@@ -35,7 +35,7 @@ async def list_logs(
     country: list[str] = Query(default=[]),
     result: list[RedirectResult] = Query(default=[]),
     limit: int = Query(50, ge=1, le=200),
-    cursor: str | None = Query(None, max_length=2048),
+    cursor: str | None = Query(None),
     domain_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),

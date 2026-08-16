@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -111,7 +111,9 @@ async def list_logs(
 
     filter_digest = filters.digest_scope(effective_domain.id, current_user)
     decoded_cursor = (
-        decode_cursor(cursor, filter_digest, settings.secret_key) if cursor else None
+        decode_cursor(cursor, filter_digest, settings.secret_key)
+        if cursor is not None
+        else None
     )
     statement = (
         select(AccessLog, ShortLink.short_code, ShortLink.name)
@@ -178,7 +180,7 @@ async def list_logs(
     if has_more:
         last = items[-1].log
         next_cursor = encode_cursor(
-            LogCursor(accessed_at=last.accessed_at, id=last.id),
+            LogCursor(accessed_at=last.accessed_at.astimezone(UTC), id=last.id),
             filter_digest,
             settings.secret_key,
         )

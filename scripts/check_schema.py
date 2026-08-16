@@ -419,7 +419,7 @@ def evaluate_schema(
         and "idx_short_links_domain_code_pattern"
         not in indexes.get("short_links", {})
         and PHASE5_CHECK not in (schema_checks or {}).get("short_links", {})
-        and PHASE5_EXTENSION not in (extensions or set())
+        and extensions is not None
     )
     if mode == "pre" and phase4_predecessor and set(missing_indexes) == {
         "short_links.idx_short_links_name_trgm",

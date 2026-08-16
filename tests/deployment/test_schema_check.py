@@ -256,7 +256,8 @@ def _public_json(result: subprocess.CompletedProcess[str], database_url: str):
     return json.loads(result.stdout)
 
 
-def test_pre_allows_empty_database_and_repairable_phase_four_schema():
+@pytest.mark.parametrize("extensions", (set(), {"pg_trgm"}))
+def test_pre_allows_empty_database_and_repairable_phase_four_schema(extensions):
     assert (
         evaluate_schema(mode="pre", tables=set(), indexes={}, target_url_ondelete=None)[
             "schema"
@@ -291,7 +292,7 @@ def test_pre_allows_empty_database_and_repairable_phase_four_schema():
         index_sorting=sorting,
         index_operator_classes=operator_classes,
         schema_checks={"short_links": {}},
-        extensions=set(),
+        extensions=extensions,
     )
     assert result["status"] == "ok"
     assert result["schema"] == "repairable"
@@ -549,6 +550,28 @@ def test_cli_pre_and_post_use_one_sanitized_json_object(migration_database_url):
     run_alembic(migration_database_url, "upgrade", "head")
     post = _run_schema_check(migration_database_url, "post")
     assert post.returncode == 0
+    assert _public_json(post, migration_database_url)["schema"] == "ready"
+
+
+def test_cli_pre_allows_downgraded_phase_four_schema_with_retained_pg_trgm(
+    migration_database_url,
+):
+    run_alembic(migration_database_url, "upgrade", "head")
+    run_alembic(migration_database_url, "downgrade", "a73f0b9d4216")
+
+    pre = _run_schema_check(migration_database_url, "pre")
+    assert pre.returncode == 0, pre.stdout + pre.stderr
+    assert _public_json(pre, migration_database_url) == {
+        "mode": "pre",
+        "status": "ok",
+        "schema": "repairable",
+        "indexes": "missing",
+        "target_url_ondelete": "SET NULL",
+    }
+
+    run_alembic(migration_database_url, "upgrade", "head")
+    post = _run_schema_check(migration_database_url, "post")
+    assert post.returncode == 0, post.stdout + post.stderr
     assert _public_json(post, migration_database_url)["schema"] == "ready"
 
 
