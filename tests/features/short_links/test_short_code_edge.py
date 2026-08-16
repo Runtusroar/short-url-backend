@@ -11,3 +11,7 @@ def test_custom_alias_reserved_prefix():
 
 def test_custom_alias_too_short():
     assert validate_custom_alias("ab") is False
+
+
+def test_custom_alias_requires_an_already_normalized_value():
+    assert validate_custom_alias("Promo_7") is False

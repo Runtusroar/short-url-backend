@@ -9,9 +9,10 @@ from sqlalchemy import create_engine, text
 from app.core.database import Base
 from tests.migrations.support import get_schema_contract, run_alembic
 
-HEAD = "a73f0b9d4216"
+HEAD = "c8e4f1a26b73"
 D6 = "d6e8f0a21b35"
 TASK_PREVIOUS_REVISIONS = (
+    "a73f0b9d4216",
     D6,
     "f31a8c0d4e72",
     "9b6d2f4a7c11",
@@ -78,7 +79,7 @@ def _seed_representable_d6_rows(connection) -> tuple[dict[str, UUID], dict[str, 
     )
     connection.execute(
         text(
-            "INSERT INTO short_links (id, domain_id, short_code, is_custom_alias, description, owner_id, is_active, default_action, created_at, updated_at) VALUES (:id, :domain_id, 'phase4', false, 'Phase 4 legacy', :owner_id, true, 'allow', now(), now())"
+            "INSERT INTO short_links (id, domain_id, short_code, is_custom_alias, description, owner_id, is_active, default_action, created_at, updated_at) VALUES (:id, :domain_id, ' Phase4 ', false, 'Phase 4 legacy', :owner_id, true, 'allow', now(), now())"
         ),
         {"id": ids["link"], "domain_id": ids["domain"], "owner_id": ids["user"]},
     )
@@ -141,6 +142,13 @@ def _assert_seed_ids_counts_and_conversions(
                     {"id": ids["link"]},
                 )
                 == "Phase 4 legacy"
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT short_code FROM short_links WHERE id = :id"),
+                    {"id": ids["link"]},
+                )
+                == "phase4"
             )
             assert connection.execute(
                 text(

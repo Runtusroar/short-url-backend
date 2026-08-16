@@ -113,8 +113,18 @@ class AccessLog(Base):
             "jsonb_typeof(proxy_types) = 'array'",
             name="ck_access_logs_proxy_types_array",
         ),
-        Index("idx_access_logs_domain_accessed_at", "domain_id", accessed_at.desc()),
-        Index("idx_access_logs_link_accessed_at", "short_link_id", accessed_at.desc()),
+        Index(
+            "idx_access_logs_domain_accessed_at",
+            "domain_id",
+            accessed_at.desc(),
+            id.desc(),
+        ),
+        Index(
+            "idx_access_logs_link_accessed_at",
+            "short_link_id",
+            accessed_at.desc(),
+            id.desc(),
+        ),
         Index("idx_access_logs_link_access_date", "short_link_id", access_date.desc()),
         Index(
             "idx_access_logs_link_client_ip_dedup",
@@ -127,11 +137,13 @@ class AccessLog(Base):
             "domain_id",
             "result",
             accessed_at.desc(),
+            id.desc(),
         ),
         Index(
             "idx_access_logs_domain_country_accessed_at",
             "domain_id",
             "country",
             accessed_at.desc(),
+            id.desc(),
         ),
     )

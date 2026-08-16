@@ -61,6 +61,8 @@ def setup_database(request: pytest.FixtureRequest):
         return
 
     Base.metadata.drop_all(_sync_engine)
+    with _sync_engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
     Base.metadata.create_all(_sync_engine)
 
     admin_id = uuid.uuid4()

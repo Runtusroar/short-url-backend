@@ -93,6 +93,7 @@ FINAL_SCHEMA_CONTRACT = {
         "checks": {
             "ck_short_links_default_action": "default_action = ANY (ARRAY['allow', 'deny'])",
             "ck_short_links_deleted_actor": "deleted_by IS NULL OR deleted_at IS NOT NULL",
+            "ck_short_links_short_code_canonical": "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'",
         },
         "indexes": {
             "idx_short_links_domain_created_at": (
@@ -105,6 +106,13 @@ FINAL_SCHEMA_CONTRACT = {
                 ("domain_id", "owner_id", "created_at"),
                 False,
                 {"created_at": ("desc",)},
+                None,
+            ),
+            "idx_short_links_name_trgm": ((None,), False, {}, None),
+            "idx_short_links_domain_code_pattern": (
+                ("domain_id", "short_code"),
+                False,
+                {},
                 None,
             ),
         },
@@ -300,15 +308,15 @@ FINAL_SCHEMA_CONTRACT = {
         },
         "indexes": {
             "idx_access_logs_domain_accessed_at": (
-                ("domain_id", "accessed_at"),
+                ("domain_id", "accessed_at", "id"),
                 False,
-                {"accessed_at": ("desc",)},
+                {"accessed_at": ("desc",), "id": ("desc",)},
                 None,
             ),
             "idx_access_logs_link_accessed_at": (
-                ("short_link_id", "accessed_at"),
+                ("short_link_id", "accessed_at", "id"),
                 False,
-                {"accessed_at": ("desc",)},
+                {"accessed_at": ("desc",), "id": ("desc",)},
                 None,
             ),
             "idx_access_logs_link_access_date": (
@@ -324,15 +332,15 @@ FINAL_SCHEMA_CONTRACT = {
                 None,
             ),
             "idx_access_logs_domain_result_accessed_at": (
-                ("domain_id", "result", "accessed_at"),
+                ("domain_id", "result", "accessed_at", "id"),
                 False,
-                {"accessed_at": ("desc",)},
+                {"accessed_at": ("desc",), "id": ("desc",)},
                 None,
             ),
             "idx_access_logs_domain_country_accessed_at": (
-                ("domain_id", "country", "accessed_at"),
+                ("domain_id", "country", "accessed_at", "id"),
                 False,
-                {"accessed_at": ("desc",)},
+                {"accessed_at": ("desc",), "id": ("desc",)},
                 None,
             ),
         },
@@ -358,5 +366,34 @@ FINAL_SCHEMA_CONTRACT = {
                 "SET NULL",
             ),
         },
+    },
+}
+
+FINAL_INDEX_DETAILS = {
+    "short_links": {
+        "idx_short_links_name_trgm": (
+            "gin",
+            ("lower((name)::text)",),
+            ("gin_trgm_ops",),
+        ),
+        "idx_short_links_domain_code_pattern": (
+            "btree",
+            (),
+            ("", "varchar_pattern_ops"),
+        ),
+    },
+    "access_logs": {
+        "idx_access_logs_domain_accessed_at": ("btree", (), ("", "", "")),
+        "idx_access_logs_link_accessed_at": ("btree", (), ("", "", "")),
+        "idx_access_logs_domain_result_accessed_at": (
+            "btree",
+            (),
+            ("", "", "", ""),
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "btree",
+            (),
+            ("", "", "", ""),
+        ),
     },
 }

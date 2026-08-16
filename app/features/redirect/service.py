@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.features.redirect.ua import get_platform
+from app.features.short_links.short_code import normalize_short_code
 from app.integrations.maxmind.country import get_country
 from app.models import AccessLog, AccessRule, Domain, IpBlacklist, ShortLink, TargetUrl
 from app.models.enums import (
@@ -235,6 +236,7 @@ async def resolve_domain_and_link(
     short_code: str,
 ) -> tuple[Domain, ShortLink]:
     domain = await _resolve_domain(db, host)
+    short_code = normalize_short_code(short_code)
 
     result = await db.execute(
         select(ShortLink).where(

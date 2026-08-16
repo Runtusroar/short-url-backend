@@ -8,7 +8,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg import sql
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 from app.core.config import settings
@@ -128,7 +128,49 @@ def get_schema_contract(database_url: str) -> dict[str, object]:
         checks: dict[str, dict[str, str]] = {}
         foreign_keys: dict[str, dict[str, dict[str, object]]] = {}
 
+        with engine.connect() as connection:
+            extension_names = set(
+                connection.scalars(text("SELECT extname FROM pg_extension"))
+            )
+
         for table_name in tables:
+            with engine.connect() as connection:
+                catalog_indexes = {
+                    row["name"]: row
+                    for row in connection.execute(
+                    text(
+                        """
+                        SELECT index_class.relname AS name,
+                               access_method.amname AS using,
+                               pg_get_expr(index_data.indexprs, index_data.indrelid) AS expressions,
+                               array_agg(
+                                   CASE WHEN operator_class.opcdefault THEN ''
+                                        ELSE operator_class.opcname END
+                                   ORDER BY ordinality
+                               ) AS operator_classes
+                        FROM pg_index AS index_data
+                        JOIN pg_class AS table_class
+                          ON table_class.oid = index_data.indrelid
+                        JOIN pg_namespace AS namespace
+                          ON namespace.oid = table_class.relnamespace
+                        JOIN pg_class AS index_class
+                          ON index_class.oid = index_data.indexrelid
+                        JOIN pg_am AS access_method
+                          ON access_method.oid = index_class.relam
+                        JOIN LATERAL unnest(index_data.indclass)
+                          WITH ORDINALITY AS class_ids(operator_class_id, ordinality)
+                          ON true
+                        JOIN pg_opclass AS operator_class
+                          ON operator_class.oid = class_ids.operator_class_id
+                        WHERE namespace.nspname = current_schema()
+                          AND table_class.relname = :table_name
+                        GROUP BY index_class.relname, access_method.amname,
+                                 index_data.indexprs, index_data.indrelid
+                        """
+                    ),
+                    {"table_name": table_name},
+                    ).mappings()
+                }
             indexes[table_name] = {}
             for index in inspector.get_indexes(table_name):
                 name = index.get("name")
@@ -153,6 +195,15 @@ def get_schema_contract(database_url: str) -> dict[str, object]:
                     else None,
                     "sorting": sorting,
                     "predicate": predicate,
+                    "using": catalog_indexes.get(name, {}).get("using"),
+                    "expressions": (
+                        (catalog_indexes[name]["expressions"],)
+                        if catalog_indexes.get(name, {}).get("expressions")
+                        else ()
+                    ),
+                    "operator_classes": tuple(
+                        catalog_indexes.get(name, {}).get("operator_classes") or ()
+                    ),
                 }
 
             columns[table_name] = {
@@ -192,6 +243,7 @@ def get_schema_contract(database_url: str) -> dict[str, object]:
             "columns": columns,
             "checks": checks,
             "foreign_keys": foreign_keys,
+            "extensions": extension_names,
         }
     finally:
         engine.dispose()

@@ -4,12 +4,12 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# Each definition is a final Phase 4 object, not a subset chosen for a
+# Each definition is a final Phase 5 object, not a subset chosen for a
 # particular query.  Preflight permits an object to be absent because the
 # migration chain can create it; a same-named object with different facts is
 # drift and must never be guessed at or overwritten.
@@ -43,6 +43,18 @@ EXPECTED_INDEXES = {
             "sorting": {"created_at": ("desc",)},
             "predicate": None,
         },
+        "idx_short_links_name_trgm": {
+            "columns": (None,),
+            "unique": False,
+            "sorting": {},
+            "predicate": None,
+        },
+        "idx_short_links_domain_code_pattern": {
+            "columns": ("domain_id", "short_code"),
+            "unique": False,
+            "sorting": {},
+            "predicate": None,
+        },
     },
     "access_rules": {
         "idx_access_rules_link_active_priority": {
@@ -62,15 +74,15 @@ EXPECTED_INDEXES = {
     },
     "access_logs": {
         "idx_access_logs_domain_accessed_at": {
-            "columns": ("domain_id", "accessed_at"),
+            "columns": ("domain_id", "accessed_at", "id"),
             "unique": False,
-            "sorting": {"accessed_at": ("desc",)},
+            "sorting": {"accessed_at": ("desc",), "id": ("desc",)},
             "predicate": None,
         },
         "idx_access_logs_link_accessed_at": {
-            "columns": ("short_link_id", "accessed_at"),
+            "columns": ("short_link_id", "accessed_at", "id"),
             "unique": False,
-            "sorting": {"accessed_at": ("desc",)},
+            "sorting": {"accessed_at": ("desc",), "id": ("desc",)},
             "predicate": None,
         },
         "idx_access_logs_link_access_date": {
@@ -86,19 +98,36 @@ EXPECTED_INDEXES = {
             "predicate": None,
         },
         "idx_access_logs_domain_result_accessed_at": {
-            "columns": ("domain_id", "result", "accessed_at"),
+            "columns": ("domain_id", "result", "accessed_at", "id"),
             "unique": False,
-            "sorting": {"accessed_at": ("desc",)},
+            "sorting": {"accessed_at": ("desc",), "id": ("desc",)},
             "predicate": None,
         },
         "idx_access_logs_domain_country_accessed_at": {
-            "columns": ("domain_id", "country", "accessed_at"),
+            "columns": ("domain_id", "country", "accessed_at", "id"),
             "unique": False,
-            "sorting": {"accessed_at": ("desc",)},
+            "sorting": {"accessed_at": ("desc",), "id": ("desc",)},
             "predicate": None,
         },
     },
 }
+PHASE4_LOG_INDEXES = {
+    "idx_access_logs_domain_accessed_at": (("domain_id", "accessed_at"), {"accessed_at": ("desc",)}),
+    "idx_access_logs_link_accessed_at": (("short_link_id", "accessed_at"), {"accessed_at": ("desc",)}),
+    "idx_access_logs_domain_result_accessed_at": (("domain_id", "result", "accessed_at"), {"accessed_at": ("desc",)}),
+    "idx_access_logs_domain_country_accessed_at": (("domain_id", "country", "accessed_at"), {"accessed_at": ("desc",)}),
+}
+PHASE5_INDEX_DETAILS = {
+    "idx_short_links_name_trgm": ("gin", ("lower((name)::text)",), ("gin_trgm_ops",)),
+    "idx_short_links_domain_code_pattern": ("btree", (), ("", "varchar_pattern_ops")),
+}
+for _name in PHASE4_LOG_INDEXES:
+    _definition = EXPECTED_INDEXES["access_logs"][_name]
+    PHASE5_INDEX_DETAILS.setdefault(
+        _name, ("btree", (), tuple("" for _ in _definition["columns"]))
+    )
+PHASE5_CHECK = "ck_short_links_short_code_canonical"
+PHASE5_EXTENSION = "pg_trgm"
 EXPECTED_INDEX_SORTING = {
     name: definition["sorting"]
     for definitions in EXPECTED_INDEXES.values()
@@ -165,6 +194,11 @@ def evaluate_schema(
     index_sorting: dict[str, dict[str, dict[str, tuple[str, ...]] | None]]
     | None = None,
     index_predicates: dict[str, dict[str, str | None]] | None = None,
+    index_using: dict[str, dict[str, str | None]] | None = None,
+    index_expressions: dict[str, dict[str, tuple[str, ...] | None]] | None = None,
+    index_operator_classes: dict[str, dict[str, tuple[str, ...] | None]] | None = None,
+    schema_checks: dict[str, set[str]] | None = None,
+    extensions: set[str] | None = None,
     foreign_key_actions: dict[str, str | None] | None = None,
     foreign_keys_by_name: dict[str, tuple[str, str, str | None]] | None = None,
 ) -> dict[str, object]:
@@ -211,6 +245,12 @@ def evaluate_schema(
 
     uniqueness = index_uniqueness or {}
     predicates = index_predicates or {}
+    phase4_log_index = lambda table, name, columns, sorting: (
+        table == "access_logs"
+        and name in PHASE4_LOG_INDEXES
+        and columns == PHASE4_LOG_INDEXES[name][0]
+        and sorting == PHASE4_LOG_INDEXES[name][1]
+    )
     missing_indexes: list[str] = []
     for table_name, definitions in EXPECTED_INDEXES.items():
         for index_name, expected in definitions.items():
@@ -219,7 +259,15 @@ def evaluate_schema(
             if actual_columns is None:
                 missing_indexes.append(identifier)
                 continue
-            if actual_columns != expected["columns"]:
+            actual_sorting = (
+                index_sorting.get(table_name, {}).get(index_name)
+                if index_sorting is not None
+                else None
+            )
+            is_phase4_log = phase4_log_index(
+                table_name, index_name, actual_columns, actual_sorting
+            )
+            if actual_columns != expected["columns"] and not is_phase4_log:
                 return _error(
                     mode=mode,
                     error_code="index_definition_mismatch",
@@ -256,7 +304,7 @@ def evaluate_schema(
                     indexes="invalid",
                     target_url_ondelete=normalized_ondelete,
                 )
-            if index_sorting.get(table_name, {}).get(index_name) != expected["sorting"]:
+            if actual_sorting != expected["sorting"] and not is_phase4_log:
                 return _error(
                     mode=mode,
                     error_code="index_sorting_mismatch",
@@ -344,6 +392,38 @@ def evaluate_schema(
                     target_url_ondelete=normalized_ondelete,
                 )
 
+    phase4_predecessor = (
+        all(
+            indexes.get("access_logs", {}).get(name) == columns
+            and (index_sorting or {}).get("access_logs", {}).get(name) == sorting
+            and uniqueness.get("access_logs", {}).get(name) is False
+            and _normalize_predicate(predicates.get("access_logs", {}).get(name))
+            is None
+            and (index_using or {}).get("access_logs", {}).get(name) == "btree"
+            and (index_expressions or {}).get("access_logs", {}).get(name) == ()
+            and (index_operator_classes or {}).get("access_logs", {}).get(name)
+            == tuple("" for _ in columns)
+            for name, (columns, sorting) in PHASE4_LOG_INDEXES.items()
+        )
+        and "idx_short_links_name_trgm"
+        not in indexes.get("short_links", {})
+        and "idx_short_links_domain_code_pattern"
+        not in indexes.get("short_links", {})
+        and PHASE5_CHECK not in (schema_checks or {}).get("short_links", set())
+        and PHASE5_EXTENSION not in (extensions or set())
+    )
+    if mode == "pre" and phase4_predecessor and set(missing_indexes) == {
+        "short_links.idx_short_links_name_trgm",
+        "short_links.idx_short_links_domain_code_pattern",
+    }:
+        return {
+            "mode": mode,
+            "status": "ok",
+            "schema": "repairable",
+            "indexes": "missing",
+            "target_url_ondelete": normalized_ondelete,
+        }
+
     if mode == "post" and missing_indexes:
         return _error(
             mode=mode,
@@ -354,13 +434,65 @@ def evaluate_schema(
             target_url_ondelete=normalized_ondelete,
         )
     if missing_indexes:
-        return {
-            "mode": mode,
-            "status": "ok",
-            "schema": "repairable",
-            "indexes": "missing",
-            "target_url_ondelete": normalized_ondelete,
-        }
+        return _error(
+            mode=mode,
+            error_code="required_index_missing",
+            detail=",".join(missing_indexes),
+            schema="incomplete",
+            indexes="missing",
+            target_url_ondelete=normalized_ondelete,
+        )
+    if extensions is None or PHASE5_EXTENSION not in extensions:
+        return _error(
+            mode=mode,
+            error_code="required_extension_missing",
+            detail=PHASE5_EXTENSION,
+            schema="incomplete",
+            indexes="invalid",
+            target_url_ondelete=normalized_ondelete,
+        )
+    if PHASE5_CHECK not in (schema_checks or {}).get("short_links", set()):
+        return _error(
+            mode=mode,
+            error_code="required_check_missing",
+            detail=f"short_links.{PHASE5_CHECK}",
+            schema="incomplete",
+            indexes="invalid",
+            target_url_ondelete=normalized_ondelete,
+        )
+    for name, (expected_using, expected_expressions, expected_operator_classes) in PHASE5_INDEX_DETAILS.items():
+        table_name = "short_links" if name.startswith("idx_short_links") else "access_logs"
+        identifier = f"{table_name}.{name}"
+        actual_using = (index_using or {}).get(table_name, {}).get(name)
+        actual_expressions = (index_expressions or {}).get(table_name, {}).get(name)
+        actual_operator_classes = (index_operator_classes or {}).get(table_name, {}).get(name)
+        if actual_operator_classes is None:
+            return _error(
+                mode=mode,
+                error_code="index_operator_class_unknown",
+                detail=identifier,
+                schema="drifted",
+                indexes="invalid",
+                target_url_ondelete=normalized_ondelete,
+            )
+        if actual_operator_classes != expected_operator_classes:
+            return _error(
+                mode=mode,
+                error_code="index_operator_class_mismatch",
+                detail=identifier,
+                schema="drifted",
+                indexes="invalid",
+                target_url_ondelete=normalized_ondelete,
+            )
+        if actual_using != expected_using or actual_expressions != expected_expressions:
+            return _error(
+                mode=mode,
+                error_code="index_definition_mismatch",
+                detail=identifier,
+                schema="drifted",
+                indexes="invalid",
+                target_url_ondelete=normalized_ondelete,
+            )
     return {
         "mode": mode,
         "status": "ok",
@@ -378,6 +510,11 @@ def inspect_schema(
     dict[str, dict[str, bool | None]],
     dict[str, dict[str, dict[str, tuple[str, ...]] | None]],
     dict[str, dict[str, str | None]],
+    dict[str, dict[str, str | None]],
+    dict[str, dict[str, tuple[str, ...] | None]],
+    dict[str, dict[str, tuple[str, ...] | None]],
+    dict[str, set[str]],
+    set[str],
     dict[str, str | None],
     dict[str, tuple[str, str, str | None]],
 ]:
@@ -389,15 +526,48 @@ def inspect_schema(
         uniqueness: dict[str, dict[str, bool | None]] = {}
         sorting: dict[str, dict[str, dict[str, tuple[str, ...]] | None]] = {}
         predicates: dict[str, dict[str, str | None]] = {}
+        using: dict[str, dict[str, str | None]] = {}
+        expressions: dict[str, dict[str, tuple[str, ...] | None]] = {}
+        operator_classes: dict[str, dict[str, tuple[str, ...] | None]] = {}
+        schema_checks: dict[str, set[str]] = {}
         for table_name, definitions in EXPECTED_INDEXES.items():
             (
                 indexes[table_name],
                 uniqueness[table_name],
                 sorting[table_name],
                 predicates[table_name],
-            ) = {}, {}, {}, {}
+                using[table_name],
+                expressions[table_name],
+                operator_classes[table_name],
+            ) = {}, {}, {}, {}, {}, {}, {}
             if table_name not in tables:
                 continue
+            with engine.connect() as connection:
+                catalog_indexes = {
+                    row["name"]: row
+                    for row in connection.execute(
+                        text(
+                            """
+                            SELECT index_class.relname AS name,
+                                   access_method.amname AS using,
+                                   pg_get_expr(index_data.indexprs, index_data.indrelid) AS expressions,
+                                   array_agg(CASE WHEN operator_class.opcdefault THEN '' ELSE operator_class.opcname END ORDER BY ordinality) AS operator_classes
+                            FROM pg_index AS index_data
+                            JOIN pg_class AS table_class ON table_class.oid = index_data.indrelid
+                            JOIN pg_namespace AS namespace ON namespace.oid = table_class.relnamespace
+                            JOIN pg_class AS index_class ON index_class.oid = index_data.indexrelid
+                            JOIN pg_am AS access_method ON access_method.oid = index_class.relam
+                            JOIN LATERAL unnest(index_data.indclass) WITH ORDINALITY AS class_ids(operator_class_id, ordinality) ON true
+                            JOIN pg_opclass AS operator_class ON operator_class.oid = class_ids.operator_class_id
+                            WHERE namespace.nspname = current_schema()
+                              AND table_class.relname = :table_name
+                            GROUP BY index_class.relname, access_method.amname,
+                                     index_data.indexprs, index_data.indrelid
+                            """
+                        ),
+                        {"table_name": table_name},
+                    ).mappings()
+                }
             for index in inspector.get_indexes(table_name):
                 name = index.get("name")
                 if name not in definitions:
@@ -419,6 +589,25 @@ def inspect_schema(
                     if isinstance(options, dict)
                     else None
                 )
+                details = catalog_indexes.get(name, {})
+                using[table_name][name] = details.get("using")
+                raw_expression = details.get("expressions")
+                expressions[table_name][name] = (
+                    (raw_expression,) if isinstance(raw_expression, str) else ()
+                )
+                raw_operator_classes = details.get("operator_classes")
+                operator_classes[table_name][name] = (
+                    tuple(raw_operator_classes)
+                    if isinstance(raw_operator_classes, (list, tuple))
+                    else None
+                )
+            schema_checks[table_name] = {
+                check["name"]
+                for check in inspector.get_check_constraints(table_name)
+                if isinstance(check.get("name"), str)
+            }
+        with engine.connect() as connection:
+            extensions = set(connection.scalars(text("SELECT extname FROM pg_extension")))
         foreign_key_actions: dict[str, str | None] = {}
         foreign_keys_by_name: dict[str, tuple[str, str, str | None]] = {}
         if "access_logs" in tables:
@@ -445,6 +634,11 @@ def inspect_schema(
             uniqueness,
             sorting,
             predicates,
+            using,
+            expressions,
+            operator_classes,
+            schema_checks,
+            extensions,
             foreign_key_actions,
             foreign_keys_by_name,
         )
@@ -484,12 +678,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
             mode=parsed.mode,
             tables=facts[0],
             indexes=facts[1],
-            target_url_ondelete=facts[5].get("target_url_id"),
+            target_url_ondelete=facts[10].get("target_url_id"),
             index_uniqueness=facts[2],
             index_sorting=facts[3],
             index_predicates=facts[4],
-            foreign_key_actions=facts[5],
-            foreign_keys_by_name=facts[6],
+            index_using=facts[5],
+            index_expressions=facts[6],
+            index_operator_classes=facts[7],
+            schema_checks=facts[8],
+            extensions=facts[9],
+            foreign_key_actions=facts[10],
+            foreign_keys_by_name=facts[11],
         )
     except Exception:  # noqa: BLE001
         result = {

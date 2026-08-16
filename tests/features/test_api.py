@@ -528,7 +528,7 @@ async def test_admin_create_short_link(client, admin_token, default_domain):
     link = await _create_short_link(client, admin_token, default_domain["id"])
     assert link["short_code"]
     assert link["domain_id"] == default_domain["id"]
-    assert len(link["short_code"]) == 6
+    assert len(link["short_code"]) == 7
     assert link["name"] == "integration test link"
     assert link["default_action"] == "deny"
     assert "description" not in link
@@ -657,6 +657,43 @@ async def test_custom_alias_conflict(client, admin_token, default_domain):
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "INVALID_SHORT_CODE"
+
+
+async def test_custom_alias_is_canonical_and_redirect_lookup_is_case_insensitive(
+    client, admin_token, default_domain
+):
+    response = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": " Promo_7 ",
+            "name": "canonical custom alias",
+        },
+    )
+    assert response.status_code == 200, response.text
+    link = response.json()
+    assert link["short_code"] == "promo_7"
+    await _add_target_url(client, admin_token, link["id"], "https://promo.example.test")
+    await _add_allow_rule(client, admin_token, link["id"])
+
+    redirect = await client.get(
+        "/PROMO_7", headers=_host(), follow_redirects=False
+    )
+    assert redirect.status_code == 302
+    assert redirect.headers["location"] == "https://promo.example.test"
+
+    conflict = await client.post(
+        "/api/short-links",
+        headers={**_auth(admin_token), **_host()},
+        json={
+            "domain_id": default_domain["id"],
+            "custom_alias": "pRoMo_7",
+            "name": "canonical alias conflict",
+        },
+    )
+    assert conflict.status_code == 400
+    assert conflict.json()["code"] == "INVALID_SHORT_CODE"
 
 
 async def test_short_link_list_by_role(

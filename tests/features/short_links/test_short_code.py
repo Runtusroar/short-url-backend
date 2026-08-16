@@ -1,14 +1,24 @@
-from app.features.short_links.short_code import generate_short_code, validate_custom_alias
+import re
+
+from app.features.short_links.short_code import (
+    generate_short_code,
+    normalize_short_code,
+    validate_custom_alias,
+)
 
 
 def test_generate_short_code_length():
     code = generate_short_code()
-    assert len(code) == 6
+    assert len(code) == 7
 
 
 def test_generate_short_code_charset():
     code = generate_short_code()
-    assert code.isalnum()
+    assert re.fullmatch(r"[a-z0-9]{7}", code)
+
+
+def test_normalize_short_code_strips_and_lowercases():
+    assert normalize_short_code(" Promo_7 ") == "promo_7"
 
 
 def test_validate_custom_alias_ok():

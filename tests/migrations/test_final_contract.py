@@ -3,7 +3,7 @@
 import re
 
 from app.core.database import Base
-from tests.migrations.final_contract import FINAL_SCHEMA_CONTRACT
+from tests.migrations.final_contract import FINAL_INDEX_DETAILS, FINAL_SCHEMA_CONTRACT
 from tests.migrations.support import get_schema_contract, run_alembic
 
 
@@ -67,8 +67,11 @@ def _orm_index(index):
             assert isinstance(name, str)
             sorting[name] = ("desc",)
     predicate = index.dialect_options["postgresql"].get("where")
+    columns = tuple(column.name for column in index.columns)
+    if index.name == "idx_short_links_name_trgm":
+        columns = (None,)
     return (
-        tuple(column.name for column in index.columns),
+        columns,
         index.unique,
         sorting,
         str(predicate) if predicate is not None else None,
@@ -144,7 +147,13 @@ def test_postgresql_matches_the_independent_literal_final_contract(
         indexes = _actual_indexes(
             actual["indexes"][table_name], expected["unique_constraints"]
         )
-        assert indexes == {
+        assert {
+            name: {
+                key: facts[key]
+                for key in ("columns", "unique", "sorting", "predicate")
+            }
+            for name, facts in indexes.items()
+        } == {
             name: {
                 "columns": columns,
                 "unique": unique,
@@ -171,3 +180,10 @@ def test_postgresql_matches_the_independent_literal_final_contract(
                 "foreign_keys"
             ].items()
         }
+    for table_name, details in FINAL_INDEX_DETAILS.items():
+        for index_name, (using, expressions, operator_classes) in details.items():
+            actual_index = actual["indexes"][table_name][index_name]
+            assert actual_index["using"] == using
+            assert actual_index["expressions"] == expressions
+            assert actual_index["operator_classes"] == operator_classes
+    assert "pg_trgm" in actual["extensions"]

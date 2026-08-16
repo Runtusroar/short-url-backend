@@ -5,7 +5,11 @@ from app.features.short_links.schemas import (
     ShortLinkDetail,
     TargetUrlCreate,
 )
-from app.features.short_links.short_code import generate_short_code, validate_custom_alias
+from app.features.short_links.short_code import (
+    generate_short_code,
+    normalize_short_code,
+    validate_custom_alias,
+)
 
 
 def test_short_link_feature_interfaces():
@@ -14,5 +18,6 @@ def test_short_link_feature_interfaces():
     assert ShortLinkDetail.model_config["from_attributes"] is True
     assert AccessRuleCreate.model_fields["action"].is_required()
     assert TargetUrlCreate.model_fields["url"].is_required()
-    assert len(generate_short_code()) == 6
+    assert len(generate_short_code()) == 7
+    assert normalize_short_code(" AbC ") == "abc"
     assert validate_custom_alias("abc") is True

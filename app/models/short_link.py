@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
     UniqueConstraint,
     text,
 )
@@ -91,12 +92,28 @@ class ShortLink(Base):
             "deleted_by IS NULL OR deleted_at IS NOT NULL",
             name="ck_short_links_deleted_actor",
         ),
+        CheckConstraint(
+            "short_code = lower(btrim(short_code)) AND short_code ~ '^[a-z0-9_-]{3,32}$'",
+            name="ck_short_links_short_code_canonical",
+        ),
         Index("idx_short_links_domain_created_at", "domain_id", created_at.desc()),
         Index(
             "idx_short_links_domain_owner_created_at",
             "domain_id",
             "owner_id",
             created_at.desc(),
+        ),
+        Index(
+            "idx_short_links_name_trgm",
+            func.lower(name).label("name_lower"),
+            postgresql_using="gin",
+            postgresql_ops={"name_lower": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_short_links_domain_code_pattern",
+            "domain_id",
+            "short_code",
+            postgresql_ops={"short_code": "varchar_pattern_ops"},
         ),
     )
 

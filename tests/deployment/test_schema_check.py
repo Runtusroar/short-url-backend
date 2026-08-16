@@ -38,6 +38,13 @@ FINAL_INDEXES = {
             {"created_at": ("desc",)},
             None,
         ),
+        "idx_short_links_name_trgm": ((None,), False, {}, None),
+        "idx_short_links_domain_code_pattern": (
+            ("domain_id", "short_code"),
+            False,
+            {},
+            None,
+        ),
     },
     "access_rules": {
         "idx_access_rules_link_active_priority": (
@@ -57,15 +64,15 @@ FINAL_INDEXES = {
     },
     "access_logs": {
         "idx_access_logs_domain_accessed_at": (
-            ("domain_id", "accessed_at"),
+            ("domain_id", "accessed_at", "id"),
             False,
-            {"accessed_at": ("desc",)},
+            {"accessed_at": ("desc",), "id": ("desc",)},
             None,
         ),
         "idx_access_logs_link_accessed_at": (
-            ("short_link_id", "accessed_at"),
+            ("short_link_id", "accessed_at", "id"),
             False,
-            {"accessed_at": ("desc",)},
+            {"accessed_at": ("desc",), "id": ("desc",)},
             None,
         ),
         "idx_access_logs_link_access_date": (
@@ -81,16 +88,44 @@ FINAL_INDEXES = {
             None,
         ),
         "idx_access_logs_domain_result_accessed_at": (
-            ("domain_id", "result", "accessed_at"),
+            ("domain_id", "result", "accessed_at", "id"),
             False,
-            {"accessed_at": ("desc",)},
+            {"accessed_at": ("desc",), "id": ("desc",)},
             None,
         ),
         "idx_access_logs_domain_country_accessed_at": (
-            ("domain_id", "country", "accessed_at"),
+            ("domain_id", "country", "accessed_at", "id"),
             False,
-            {"accessed_at": ("desc",)},
+            {"accessed_at": ("desc",), "id": ("desc",)},
             None,
+        ),
+    },
+}
+FINAL_INDEX_DETAILS = {
+    "short_links": {
+        "idx_short_links_name_trgm": (
+            "gin",
+            ("lower((name)::text)",),
+            ("gin_trgm_ops",),
+        ),
+        "idx_short_links_domain_code_pattern": (
+            "btree",
+            (),
+            ("", "varchar_pattern_ops"),
+        ),
+    },
+    "access_logs": {
+        "idx_access_logs_domain_accessed_at": ("btree", (), ("", "", "")),
+        "idx_access_logs_link_accessed_at": ("btree", (), ("", "", "")),
+        "idx_access_logs_domain_result_accessed_at": (
+            "btree",
+            (),
+            ("", "", "", ""),
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "btree",
+            (),
+            ("", "", "", ""),
         ),
     },
 }
@@ -136,6 +171,27 @@ def _ready_predicates():
     }
 
 
+def _ready_using():
+    return {
+        table: {name: facts[0] for name, facts in definitions.items()}
+        for table, definitions in FINAL_INDEX_DETAILS.items()
+    }
+
+
+def _ready_expressions():
+    return {
+        table: {name: facts[1] for name, facts in definitions.items()}
+        for table, definitions in FINAL_INDEX_DETAILS.items()
+    }
+
+
+def _ready_operator_classes():
+    return {
+        table: {name: facts[2] for name, facts in definitions.items()}
+        for table, definitions in FINAL_INDEX_DETAILS.items()
+    }
+
+
 def _ready_foreign_keys():
     return dict(FINAL_ACCESS_LOG_ACTIONS)
 
@@ -161,6 +217,11 @@ def _evaluate(*, mode="post", **overrides):
         "index_uniqueness": _ready_uniqueness(),
         "index_sorting": _ready_sorting(),
         "index_predicates": _ready_predicates(),
+        "index_using": _ready_using(),
+        "index_expressions": _ready_expressions(),
+        "index_operator_classes": _ready_operator_classes(),
+        "schema_checks": {"short_links": {"ck_short_links_short_code_canonical"}},
+        "extensions": {"pg_trgm"},
         "foreign_key_actions": _ready_foreign_keys(),
         "foreign_keys_by_name": _ready_named_foreign_keys(),
     }
@@ -191,21 +252,59 @@ def _public_json(result: subprocess.CompletedProcess[str], database_url: str):
     return json.loads(result.stdout)
 
 
-def test_pre_allows_empty_database_and_repairable_phase_three_schema():
+def test_pre_allows_empty_database_and_repairable_phase_four_schema():
     assert (
         evaluate_schema(mode="pre", tables=set(), indexes={}, target_url_ondelete=None)[
             "schema"
         ]
         == "empty"
     )
-    result = evaluate_schema(
+    indexes = _ready_indexes()
+    sorting = _ready_sorting()
+    operator_classes = _ready_operator_classes()
+    for name, columns in {
+        "idx_access_logs_domain_accessed_at": ("domain_id", "accessed_at"),
+        "idx_access_logs_link_accessed_at": ("short_link_id", "accessed_at"),
+        "idx_access_logs_domain_result_accessed_at": (
+            "domain_id",
+            "result",
+            "accessed_at",
+        ),
+        "idx_access_logs_domain_country_accessed_at": (
+            "domain_id",
+            "country",
+            "accessed_at",
+        ),
+    }.items():
+        indexes["access_logs"][name] = columns
+        sorting["access_logs"][name] = {"accessed_at": ("desc",)}
+        operator_classes["access_logs"][name] = tuple("" for _ in columns)
+    del indexes["short_links"]["idx_short_links_name_trgm"]
+    del indexes["short_links"]["idx_short_links_domain_code_pattern"]
+    result = _evaluate(
         mode="pre",
-        tables=set(APPLICATION_TABLES),
-        indexes={table: {} for table in FINAL_INDEXES},
-        target_url_ondelete=None,
+        indexes=indexes,
+        index_sorting=sorting,
+        index_operator_classes=operator_classes,
+        schema_checks={"short_links": set()},
+        extensions=set(),
     )
     assert result["status"] == "ok"
     assert result["schema"] == "repairable"
+
+
+def test_pre_rejects_any_incomplete_contract_other_than_phase_four():
+    indexes = _ready_indexes()
+    del indexes["short_links"]["idx_short_links_name_trgm"]
+    del indexes["short_links"]["idx_short_links_domain_code_pattern"]
+    result = _evaluate(
+        mode="pre",
+        indexes=indexes,
+        schema_checks={"short_links": set()},
+        extensions=set(),
+    )
+    assert result["status"] == "error"
+    assert result["error_code"] == "required_index_missing"
 
 
 def test_pure_evaluate_runs_with_an_unreachable_database_url_without_shared_ddl():
@@ -221,7 +320,7 @@ def test_pure_evaluate_runs_with_an_unreachable_database_url_without_shared_ddl(
             "-q",
             __file__,
             "-k",
-            "pre_allows_empty_database_and_repairable_phase_three_schema",
+            "pre_allows_empty_database_and_repairable_phase_four_schema",
         ],
         cwd=ROOT,
         env=environment,
@@ -325,6 +424,20 @@ def test_post_reports_ready_final_contract():
     }
 
 
+def test_post_requires_pg_trgm_and_known_operator_classes():
+    assert _evaluate(extensions=set())["error_code"] == "required_extension_missing"
+    assert _evaluate(index_operator_classes=None)["error_code"] == "index_operator_class_unknown"
+    operator_classes = _ready_operator_classes()
+    operator_classes["short_links"]["idx_short_links_domain_code_pattern"] = (
+        "",
+        "text_pattern_ops",
+    )
+    assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"
+    operator_classes = _ready_operator_classes()
+    operator_classes["short_links"]["idx_short_links_name_trgm"] = ("text_ops",)
+    assert _evaluate(index_operator_classes=operator_classes)["error_code"] == "index_operator_class_mismatch"
+
+
 @pytest.mark.parametrize("mode", ("pre", "post"))
 def test_complete_final_indexes_fail_closed_when_named_fk_map_is_missing(mode):
     result = _evaluate(mode=mode, foreign_keys_by_name={})
@@ -346,7 +459,7 @@ def test_cli_pre_and_post_use_one_sanitized_json_object(migration_database_url):
     assert pre.returncode == 0
     assert _public_json(pre, migration_database_url)["schema"] == "empty"
 
-    run_alembic(migration_database_url, "upgrade", "d6e8f0a21b35")
+    run_alembic(migration_database_url, "upgrade", "a73f0b9d4216")
     historical = _run_schema_check(migration_database_url, "pre")
     historical_payload = _public_json(historical, migration_database_url)
     assert historical.returncode == 0, historical_payload
@@ -430,16 +543,16 @@ def test_cli_rejects_each_final_index_with_wrong_columns(
 @pytest.mark.parametrize(
     ("name", "columns"),
     [
-        ("idx_access_logs_domain_accessed_at", "domain_id, accessed_at"),
-        ("idx_access_logs_link_accessed_at", "short_link_id, accessed_at"),
+        ("idx_access_logs_domain_accessed_at", "domain_id, accessed_at, id"),
+        ("idx_access_logs_link_accessed_at", "short_link_id, accessed_at, id"),
         ("idx_access_logs_link_access_date", "short_link_id, access_date"),
         (
             "idx_access_logs_domain_result_accessed_at",
-            "domain_id, result, accessed_at",
+            "domain_id, result, accessed_at, id",
         ),
         (
             "idx_access_logs_domain_country_accessed_at",
-            "domain_id, country, accessed_at",
+            "domain_id, country, accessed_at, id",
         ),
     ],
 )

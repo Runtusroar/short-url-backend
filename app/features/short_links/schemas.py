@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
 from app.models.enums import AccessAction, ClientRequirement, ProxyRequirement
+from app.features.short_links.short_code import normalize_short_code
 
 
 def _contract_error(message: str) -> PydanticCustomError:
@@ -180,7 +181,7 @@ class AccessRuleResponse(AccessRuleBase):
 
 class ShortLinkCreate(BaseModel):
     domain_id: UUID
-    custom_alias: str | None = Field(default=None, pattern="^[a-zA-Z0-9_-]{3,32}$")
+    custom_alias: str | None = None
     name: str
     normal_urls: list[str] = Field(default_factory=list, min_length=1)
     blocked_urls: list[str] = Field(default_factory=list, min_length=1)
@@ -191,6 +192,11 @@ class ShortLinkCreate(BaseModel):
         if not isinstance(value, str) or not value.strip() or len(value) > 128:
             raise _contract_error("name must be 1 to 128 characters")
         return value
+
+    @field_validator("custom_alias", mode="before")
+    @classmethod
+    def normalize_custom_alias(cls, value: object) -> object:
+        return normalize_short_code(value) if isinstance(value, str) else value
 
 
 class ShortLinkUpdate(BaseModel):
