@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from ipaddress import ip_address
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -16,17 +17,33 @@ from app.services.ua import get_platform
 router = APIRouter(tags=["redirect"])
 
 
+def _parse_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 def _get_client_ip(request: Request) -> str:
+    """Return the client IP sanitized by the trusted local reverse proxy."""
+    real_ip = _parse_ip(request.headers.get("x-real-ip"))
+    if real_ip:
+        return real_ip
+
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    forwarded_ip = _parse_ip(forwarded.split(",")[0] if forwarded else None)
+    if forwarded_ip:
+        return forwarded_ip
+
+    client_ip = _parse_ip(request.client.host if request.client else None)
+    return client_ip or "unknown"
 
 
 def _is_proxy(request: Request) -> bool:
-    """Detect proxy/VPN by common proxy headers."""
-    proxy_headers = ["x-forwarded-for", "x-real-ip", "via", "forwarded"]
-    return any(request.headers.get(header) for header in proxy_headers)
+    """Reverse-proxy headers do not prove that the client uses a proxy/VPN."""
+    return False
 
 
 async def _is_blacklisted(db: AsyncSession, ip: str) -> bool:

@@ -58,7 +58,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "18000:8000"
+      - "127.0.0.1:18000:8000"
     networks:
       - short_url_network
 
