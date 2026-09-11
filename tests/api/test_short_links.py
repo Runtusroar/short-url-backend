@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 import pytest
 
@@ -58,6 +59,79 @@ async def test_manage_user_creates_complete_normalized_short_link(client, operat
     assert link["policy"]["countries"] == ["CN", "SG"]
     assert link["policy"]["referer_patterns"] == ["*.example.com"]
     assert link["policy"]["block_proxy"] is True
+
+
+@pytest.mark.asyncio
+async def test_policy_values_normalize_valid_country_and_hostname_patterns(client, operator_token, domain_a):
+    response = await client.post(
+        "/api/short-links",
+        headers=auth(operator_token),
+        json=aggregate_payload(
+            str(domain_a.id),
+            custom_alias="PolicyNormalizeA",
+            policy={
+                "country_mode": "allow",
+                "countries": ["cN"],
+                "platform_mode": "off",
+                "platforms": [],
+                "referer_mode": "allow",
+                "referer_patterns": ["Example.COM", "*.Sub.Example.COM"],
+                "block_proxy": False,
+                "block_bot": False,
+            },
+        ),
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["policy"]["countries"] == ["CN"]
+    assert response.json()["policy"]["referer_patterns"] == [
+        "example.com",
+        "*.sub.example.com",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("countries", "referer_patterns"),
+    [
+        (["ſſ"], ["example.com"]),
+        (["C"], ["example.com"]),
+        (["USA"], ["example.com"]),
+        (["CN"], ["https://example.com"]),
+        (["CN"], ["example.com:443"]),
+        (["CN"], ["example.com/path"]),
+        (["CN"], ["example.com?query=1"]),
+        (["CN"], ["example.com#fragment"]),
+        (["CN"], ["example..com"]),
+        (["CN"], ["exam*ple.com"]),
+        (["CN"], ["*example.com"]),
+        (["CN"], ["Kexample.com"]),
+    ],
+)
+async def test_policy_rejects_noncanonical_country_and_referer_values(
+    client, operator_token, domain_a, countries, referer_patterns
+):
+    response = await client.post(
+        "/api/short-links",
+        headers=auth(operator_token),
+        json=aggregate_payload(
+            str(domain_a.id),
+            custom_alias=f"PolicyInvalid{uuid.uuid4().hex[:12]}",
+            policy={
+                "country_mode": "allow",
+                "countries": countries,
+                "platform_mode": "off",
+                "platforms": [],
+                "referer_mode": "allow",
+                "referer_patterns": referer_patterns,
+                "block_proxy": False,
+                "block_bot": False,
+            },
+        ),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
 
 
 @pytest.mark.asyncio
@@ -158,6 +232,124 @@ async def test_invalid_complete_update_rolls_back_existing_children(client, admi
         "https://example.com/ok",
         "https://example.com/blocked",
     }
+
+
+@pytest.mark.asyncio
+async def test_aggregate_update_replaces_children_by_id_and_upserts_policy(client, admin_token, domain_a):
+    created = await client.post(
+        "/api/short-links", headers=auth(admin_token), json=aggregate_payload(str(domain_a.id), custom_alias="ReplaceChildrenA")
+    )
+    assert created.status_code == 201, created.text
+    original = created.json()
+    allowed = next(item for item in original["destinations"] if item["type"] == "allowed")
+    blocked = next(item for item in original["destinations"] if item["type"] == "blocked")
+
+    updated = await client.put(
+        f"/api/short-links/{original['id']}",
+        headers=auth(admin_token),
+        json=aggregate_payload(
+            str(domain_a.id),
+            custom_alias=None,
+            note="replaced aggregate",
+            destinations=[
+                {
+                    "id": allowed["id"],
+                    "url": "https://example.com/changed",
+                    "type": "allowed",
+                    "weight": 9,
+                    "is_active": True,
+                },
+                {
+                    "url": "https://example.com/new-blocked",
+                    "type": "blocked",
+                    "weight": 2,
+                    "is_active": True,
+                },
+            ],
+            policy={
+                "country_mode": "block",
+                "countries": ["us"],
+                "platform_mode": "allow",
+                "platforms": ["desktop"],
+                "referer_mode": "off",
+                "referer_patterns": [],
+                "block_proxy": False,
+                "block_bot": False,
+            },
+        ),
+    )
+
+    assert updated.status_code == 200, updated.text
+    result = updated.json()
+    assert result["note"] == "replaced aggregate"
+    assert result["policy"]["country_mode"] == "block"
+    assert result["policy"]["countries"] == ["US"]
+    assert result["policy"]["platform_mode"] == "allow"
+    assert result["policy"]["platforms"] == ["desktop"]
+    assert {item["id"] for item in result["destinations"]} != {allowed["id"], blocked["id"]}
+    assert any(
+        item["id"] == allowed["id"]
+        and item["url"] == "https://example.com/changed"
+        and item["weight"] == 9
+        for item in result["destinations"]
+    )
+    assert all(item["id"] != blocked["id"] for item in result["destinations"])
+    assert any(item["url"] == "https://example.com/new-blocked" for item in result["destinations"])
+
+
+@pytest.mark.asyncio
+async def test_unknown_destination_update_rolls_back_scalar_and_aggregate_changes(client, admin_token, domain_a):
+    created = await client.post(
+        "/api/short-links", headers=auth(admin_token), json=aggregate_payload(str(domain_a.id), custom_alias="UnknownRollbackA")
+    )
+    assert created.status_code == 201, created.text
+    original = created.json()
+    allowed = next(item for item in original["destinations"] if item["type"] == "allowed")
+
+    rejected = await client.put(
+        f"/api/short-links/{original['id']}",
+        headers=auth(admin_token),
+        json=aggregate_payload(
+            str(domain_a.id),
+            custom_alias=None,
+            note="must roll back inside transaction",
+            destinations=[
+                {
+                    "id": allowed["id"],
+                    "url": "https://example.com/changed-before-error",
+                    "type": "allowed",
+                    "weight": 4,
+                    "is_active": True,
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "url": "https://example.com/not-owned",
+                    "type": "blocked",
+                    "weight": 1,
+                    "is_active": True,
+                },
+            ],
+            policy={
+                "country_mode": "block",
+                "countries": ["US"],
+                "platform_mode": "off",
+                "platforms": [],
+                "referer_mode": "off",
+                "referer_patterns": [],
+                "block_proxy": False,
+                "block_bot": False,
+            },
+        ),
+    )
+
+    assert rejected.status_code == 404, rejected.text
+    assert rejected.json()["code"] == "NOT_FOUND"
+
+    unchanged = await client.get(f"/api/short-links/{original['id']}", headers=auth(admin_token))
+    assert unchanged.status_code == 200, unchanged.text
+    assert unchanged.json()["note"] == original["note"]
+    assert unchanged.json()["destinations"] == original["destinations"]
+    assert unchanged.json()["policy"] == original["policy"]
 
 
 @pytest.mark.asyncio

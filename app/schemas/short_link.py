@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from uuid import UUID
 
@@ -5,6 +6,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.db.models import PolicyMode, TargetUrlType
 from app.services.short_code import validate_custom_alias
+
+
+_COUNTRY_CODE_RE = re.compile(r"^[A-Za-z]{2}$", re.ASCII)
+_HOST_LABEL_RE = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_REFERER_PATTERN_RE = re.compile(
+    rf"^(?:\*\.)?{_HOST_LABEL_RE}(?:\.{_HOST_LABEL_RE})+$", re.ASCII
+)
 
 
 class DestinationWrite(BaseModel):
@@ -37,10 +45,9 @@ class LinkPolicyWrite(BaseModel):
     @field_validator("countries")
     @classmethod
     def normalize_countries(cls, countries: list[str]) -> list[str]:
-        normalized = [country.strip().upper() for country in countries]
-        if any(not country for country in normalized):
-            raise ValueError("国家代码不能为空")
-        return normalized
+        if any(_COUNTRY_CODE_RE.fullmatch(country) is None for country in countries):
+            raise ValueError("国家代码必须是两个 ASCII 字母")
+        return [country.upper() for country in countries]
 
     @field_validator("platforms")
     @classmethod
@@ -53,9 +60,14 @@ class LinkPolicyWrite(BaseModel):
     @field_validator("referer_patterns")
     @classmethod
     def normalize_referer_patterns(cls, patterns: list[str]) -> list[str]:
-        normalized = [pattern.strip().lower() for pattern in patterns]
-        if any(not pattern for pattern in normalized):
-            raise ValueError("Referer 域名模式不能为空")
+        if any(not pattern.isascii() for pattern in patterns):
+            raise ValueError("Referer 必须是 ASCII 域名模式")
+        normalized = [pattern.lower() for pattern in patterns]
+        if any(
+            len(pattern) > 253 or _REFERER_PATTERN_RE.fullmatch(pattern) is None
+            for pattern in normalized
+        ):
+            raise ValueError("Referer 必须是域名或以 *. 开头的域名模式")
         return normalized
 
     @model_validator(mode="after")
