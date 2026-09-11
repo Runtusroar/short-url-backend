@@ -1,4 +1,4 @@
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     maxmind_timeout_seconds: float = 1.5
     access_token_expire_minutes: int = 60 * 24
     cookie_secure: bool = False
+
+    @field_validator("maxmind_account_id", "maxmind_license_key", mode="before")
+    @classmethod
+    def empty_maxmind_credentials_are_none(cls, value: object) -> object:
+        """Treat Compose's empty optional MaxMind substitutions as absent."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 settings = Settings()

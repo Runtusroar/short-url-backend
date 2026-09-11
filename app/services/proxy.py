@@ -56,24 +56,35 @@ def _normalize_provider_response(response: object) -> tuple[bool, str | None]:
     traits = _field(response, "traits")
     fields = traits if traits is not None else response
     is_proxy = _field(fields, "is_proxy")
-    if is_proxy is None:
-        is_proxy = _field(fields, "is_anonymous_proxy")
-
     proxy_type = _field(fields, "proxy_type")
     for provider_field, normalized_type in (
+        ("is_tor_exit_node", "tor_exit_node"),
+        ("tor_exit_node", "tor_exit_node"),
         ("is_anonymous_vpn", "anonymous_vpn"),
         ("anonymous_vpn", "anonymous_vpn"),
+        ("is_residential_proxy", "residential_proxy"),
+        ("residential_proxy", "residential_proxy"),
         ("is_hosting_provider", "hosting_provider"),
         ("hosting_provider", "hosting_provider"),
         ("is_public_proxy", "public_proxy"),
         ("public_proxy", "public_proxy"),
-        ("is_tor_exit_node", "tor_exit_node"),
-        ("tor_exit_node", "tor_exit_node"),
+        ("is_legitimate_proxy", "legitimate_proxy"),
+        ("legitimate_proxy", "legitimate_proxy"),
+        ("is_anonymous_proxy", "anonymous_proxy"),
+        ("anonymous_proxy", "anonymous_proxy"),
+        ("is_anonymous", "anonymous"),
+        ("anonymous", "anonymous"),
     ):
         if _field(fields, provider_field) is True:
             is_proxy = True
             proxy_type = normalized_type
             break
+
+    if is_proxy is None:
+        # GeoIP2 Insights does not expose a generic ``is_proxy`` field.  Its
+        # traits always include this boolean, so a false value is a successful
+        # negative result worth caching.
+        is_proxy = _field(fields, "is_anonymous_proxy")
 
     if not isinstance(is_proxy, bool):
         raise ProxyProviderError("provider response omitted proxy status")

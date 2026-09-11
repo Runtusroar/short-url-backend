@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+from geoip2.records import Traits
 import pytest
 from sqlalchemy import cast, delete, select
 from sqlalchemy.dialects.postgresql import INET
@@ -95,3 +97,62 @@ async def test_provider_failures_fail_open_without_persisting_reputation(db, err
 
     assert result is None
     assert await db.scalar(select(IpReputation).where(IpReputation.ip == cast(ip, INET))) is None
+
+
+@pytest.mark.parametrize(
+    ("trait", "proxy_type"),
+    [
+        ("is_anonymous", "anonymous"),
+        ("is_anonymous_proxy", "anonymous_proxy"),
+        ("is_anonymous_vpn", "anonymous_vpn"),
+        ("is_hosting_provider", "hosting_provider"),
+        ("is_legitimate_proxy", "legitimate_proxy"),
+        ("is_public_proxy", "public_proxy"),
+        ("is_residential_proxy", "residential_proxy"),
+        ("is_tor_exit_node", "tor_exit_node"),
+    ],
+)
+async def test_persists_real_insights_proxy_traits_and_non_proxy_results(trait, proxy_type):
+    """Dropping any GeoIP2 trait must not silently classify that proxy as clean."""
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    cases = [(trait, True, proxy_type), (None, False, None)]
+    async with AsyncSessionLocal() as db:
+        for index, (enabled_trait, expected_proxy, expected_type) in enumerate(cases):
+            ip = f"203.0.113.{200 + index}"
+            await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+            await db.commit()
+            traits = Traits(**({enabled_trait: True} if enabled_trait else {}))
+
+            result = await get_proxy_result(db, ip, Provider(response=SimpleNamespace(traits=traits)), now)
+
+            assert result is not None
+            assert (result.is_proxy, result.proxy_type, result.source) == (
+                expected_proxy,
+                expected_type,
+                "maxmind",
+            )
+            row = await db.scalar(select(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+            assert row is not None
+            assert (row.is_proxy, row.proxy_type) == (expected_proxy, expected_type)
+            await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+            await db.commit()
+
+
+async def test_generic_anonymous_trait_without_a_narrower_trait_is_persisted():
+    """A partial Insights response must not treat generic anonymity as clean."""
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    ip = "203.0.113.210"
+    response = SimpleNamespace(traits=SimpleNamespace(is_anonymous=True))
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await db.commit()
+
+        result = await get_proxy_result(db, ip, Provider(response=response), now)
+
+        assert result is not None
+        assert (result.is_proxy, result.proxy_type) == (True, "anonymous")
+        row = await db.scalar(select(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        assert row is not None
+        assert (row.is_proxy, row.proxy_type) == (True, "anonymous")
+        await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await db.commit()
