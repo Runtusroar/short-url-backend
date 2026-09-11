@@ -21,6 +21,59 @@ def legacy_rule(**kwargs) -> LegacyRule:
     return LegacyRule(**kwargs)
 
 
+@dataclass(frozen=True)
+class Visit:
+    country: str | None
+    legacy_platform: str
+    normalized_platform: str
+    is_proxy: bool
+    is_bot: bool
+
+
+REPRESENTATIVE_VISITS = (
+    Visit("CN", "mobile", "smartphone", False, False),
+    Visit("US", "pc", "desktop", False, False),
+    Visit("CN", "pc", "desktop", True, False),
+    Visit("CN", "bot", "bot", False, True),
+)
+
+
+def _legacy_decision(default_action: str, rule: LegacyRule | None, visit: Visit) -> str:
+    if rule is None or not rule.is_active:
+        return default_action
+    if rule.countries and (visit.country or "").lower() not in {country.lower() for country in rule.countries}:
+        return default_action
+    if visit.is_bot:
+        if not rule.allow_bot:
+            return default_action
+    elif rule.ua_platforms and visit.legacy_platform.lower() not in {
+        platform.lower() for platform in rule.ua_platforms
+    }:
+        return default_action
+    if visit.is_proxy and not rule.allow_proxy:
+        return default_action
+    return rule.action
+
+
+def _normalized_decision(policy, visit: Visit) -> str:
+    if policy is None:
+        return "allow"
+    if policy.block_bot and visit.is_bot:
+        return "deny"
+    # The approved runtime treats bots as proxies when proxy blocking is on.
+    if policy.block_proxy and (visit.is_proxy or visit.is_bot):
+        return "deny"
+    if policy.country_mode == "allow" and (visit.country or "").upper() not in policy.countries:
+        return "deny"
+    if policy.country_mode == "block" and (visit.country or "").upper() in policy.countries:
+        return "deny"
+    if policy.platform_mode == "allow" and visit.normalized_platform not in policy.platforms:
+        return "deny"
+    if policy.platform_mode == "block" and visit.normalized_platform in policy.platforms:
+        return "deny"
+    return "allow"
+
+
 def test_empty_rules_keep_an_unrestricted_link_unrestricted():
     """Adding a policy for an empty allow-default link would change its traffic."""
     result = convert_legacy_policy(default_action="allow", rules=[])
@@ -119,17 +172,62 @@ def test_unconditional_legacy_deny_refuses_conversion():
 
 
 @pytest.mark.parametrize(
-    ("field", "legacy_value", "expected_value"),
+    "rule",
     [
-        ("allow_proxy", False, True),
-        ("allow_bot", False, True),
+        legacy_rule(action="allow", allow_proxy=False, allow_bot=True),
+        legacy_rule(action="allow", countries=["CN"], allow_proxy=False, allow_bot=True),
     ],
 )
-def test_proxy_and_bot_flags_become_explicit_blocks(field, legacy_value, expected_value):
+def test_proxy_blocking_refuses_when_legacy_bots_are_allowed(rule):
+    """Proxy blocking would newly block an allowed bot in the approved runtime."""
+    result = convert_legacy_policy(default_action="deny", rules=[rule])
+
+    assert result.convertible is False
+    assert "bot" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("default_action", "rule"),
+    [
+        ("allow", None),
+        ("deny", legacy_rule(action="allow")),
+        ("allow", legacy_rule(action="deny", countries=["cn"])),
+        ("deny", legacy_rule(action="allow", countries=["cn"])),
+        ("deny", legacy_rule(action="allow", countries=["CN"], allow_bot=False)),
+        ("deny", legacy_rule(action="allow", countries=["CN"], allow_proxy=False, allow_bot=False)),
+        ("deny", legacy_rule(action="allow", ua_platforms=["mobile"], allow_bot=False)),
+        ("deny", legacy_rule(action="allow", ua_platforms=["pc"], allow_bot=False)),
+        (
+            "deny",
+            legacy_rule(action="allow", ua_platforms=["mobile"], allow_proxy=False, allow_bot=False),
+        ),
+        ("deny", legacy_rule(action="allow", allow_bot=False)),
+        ("deny", legacy_rule(action="allow", allow_proxy=False, allow_bot=False)),
+    ],
+)
+def test_accepted_conversions_match_representative_legacy_decisions(default_action, rule):
+    """Any accepted conversion must keep country, platform, proxy, and bot decisions identical."""
+    result = convert_legacy_policy(default_action=default_action, rules=[] if rule is None else [rule])
+
+    assert result.convertible is True
+    for visit in REPRESENTATIVE_VISITS:
+        assert _normalized_decision(result.policy, visit) == _legacy_decision(
+            default_action, rule, visit
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "legacy_value", "expected_value", "other_flags"),
+    [
+        ("allow_proxy", False, True, {"allow_bot": False}),
+        ("allow_bot", False, True, {}),
+    ],
+)
+def test_proxy_and_bot_flags_become_explicit_blocks(field, legacy_value, expected_value, other_flags):
     """Ignoring a legacy false flag would allow proxy or bot traffic."""
     result = convert_legacy_policy(
         default_action="deny",
-        rules=[legacy_rule(action="allow", **{field: legacy_value})],
+        rules=[legacy_rule(action="allow", **other_flags, **{field: legacy_value})],
     )
 
     assert result.convertible is True

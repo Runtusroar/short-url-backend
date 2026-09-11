@@ -126,6 +126,8 @@ def convert_legacy_policy(
         return _refusal(link, "proxy or bot exceptions cannot preserve a deny rule")
     if platforms and (action != "allow" or allow_bot):
         return _refusal(link, "legacy bot handling cannot be preserved with a platform policy")
+    if not allow_proxy and allow_bot:
+        return _refusal(link, "legacy bot allowance cannot be preserved when proxy blocking treats bots as proxies")
 
     if not countries and not platforms:
         if action == "deny":
