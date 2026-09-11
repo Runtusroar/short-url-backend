@@ -5,7 +5,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_limiter import FastAPILimiter
 
-from app.api import auth, domains as domain_api, redirect as redirect_api, security, short_links, users
+from app.api import (
+    auth,
+    dashboard,
+    domains as domain_api,
+    logs as access_logs,
+    redirect as redirect_api,
+    security,
+    short_links,
+    users,
+)
 from app.core.config import settings
 from app.exceptions import register_exception_handlers
 from app.rate_limit import rate_limit, user_identifier
@@ -49,6 +58,8 @@ app.include_router(users.router, dependencies=[user_rate_limit])
 app.include_router(domain_api.router, dependencies=[user_rate_limit])
 app.include_router(security.router, dependencies=[user_rate_limit])
 app.include_router(short_links.router, dependencies=[user_rate_limit])
+app.include_router(dashboard.router, dependencies=[user_rate_limit])
+app.include_router(access_logs.router, dependencies=[user_rate_limit])
 app.include_router(logs.router, dependencies=[user_rate_limit])
 
 
