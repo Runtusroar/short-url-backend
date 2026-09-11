@@ -1,6 +1,9 @@
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.auth import Token
 
 
 class UserBase(BaseModel):
@@ -41,11 +44,6 @@ class DomainResponse(DomainBase):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     created_at: datetime
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
 
 
 class TargetUrlBase(BaseModel):
@@ -99,7 +97,7 @@ class AccessRuleUpdate(BaseModel):
     is_active: bool | None = None
 
 
-class AccessRuleResponse(AccessRuleBase):
+class AccessRuleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     short_link_id: UUID
