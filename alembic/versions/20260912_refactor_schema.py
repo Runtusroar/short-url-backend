@@ -38,7 +38,10 @@ def _preflight_and_copy_policies() -> None:
         ).mappings().all()
         conversion = convert_legacy_policy(dict(link), rules)
         if not conversion.convertible:
-            failures.extend(conversion.affected_ids or (str(link["id"]),))
+            failures.extend(
+                f"{link_id}: {conversion.reason}"
+                for link_id in (conversion.affected_ids or (str(link["id"]),))
+            )
         elif conversion.policy is not None:
             converted.append((link["id"], conversion.policy))
     if failures:
@@ -75,6 +78,46 @@ def _preflight_and_copy_policies() -> None:
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
+    bind = op.get_bind()
+    bind.execute(
+        sa.text(
+            """
+            CREATE OR REPLACE FUNCTION pg_temp.safe_inet(value text) RETURNS inet
+            LANGUAGE plpgsql AS $$
+            BEGIN
+                RETURN NULLIF(btrim(value), '')::inet;
+            EXCEPTION WHEN OTHERS THEN
+                RETURN NULL;
+            END;
+            $$
+            """
+        )
+    )
+    invalid_blacklist = bind.execute(
+        sa.text(
+            """
+            SELECT id, ip FROM ip_blacklist
+            WHERE pg_temp.safe_inet(ip) IS NULL
+            ORDER BY id
+            """
+        )
+    ).mappings().all()
+    if invalid_blacklist:
+        values = ", ".join(f"{row['id']}={row['ip']!r}" for row in invalid_blacklist)
+        raise RuntimeError(f"Cannot safely convert invalid IP blacklist entries: {values}")
+    duplicate_blacklist = bind.execute(
+        sa.text(
+            """
+            SELECT pg_temp.safe_inet(ip)::text AS ip, string_agg(id::text, ', ' ORDER BY id) AS ids
+            FROM ip_blacklist
+            GROUP BY pg_temp.safe_inet(ip)
+            HAVING count(*) > 1
+            """
+        )
+    ).mappings().all()
+    if duplicate_blacklist:
+        values = ", ".join(f"{row['ip']} ({row['ids']})" for row in duplicate_blacklist)
+        raise RuntimeError(f"Cannot safely merge duplicate IP blacklist entries: {values}")
 
     op.create_table(
         "user_domain_access",
@@ -109,7 +152,6 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     )
 
-    bind = op.get_bind()
     bind.execute(
         sa.text(
             """
@@ -180,8 +222,7 @@ def upgrade() -> None:
         )
     )
     op.alter_column("access_logs", "ip", nullable=True)
-    bind.execute(sa.text("UPDATE access_logs SET ip = NULL WHERE ip IS NULL OR ip IN ('unknown', '')"))
-    op.alter_column("access_logs", "ip", type_=postgresql.INET, postgresql_using="NULLIF(ip, 'unknown')::inet", nullable=True)
+    op.alter_column("access_logs", "ip", type_=postgresql.INET, postgresql_using="pg_temp.safe_inet(ip)")
     op.create_check_constraint("ck_access_logs_result", "access_logs", "result IN ('allowed', 'blocked', 'error')")
     op.create_check_constraint(
         "ck_access_logs_block_reason",
@@ -203,7 +244,7 @@ def upgrade() -> None:
     op.create_index("ix_access_logs_country_code_accessed_at", "access_logs", ["country_code", sa.text("accessed_at DESC")])
     op.create_index("ix_access_logs_block_reason_accessed_at", "access_logs", ["block_reason", sa.text("accessed_at DESC")])
 
-    op.alter_column("ip_blacklist", "ip", type_=postgresql.INET, postgresql_using="NULLIF(ip, 'unknown')::inet")
+    op.alter_column("ip_blacklist", "ip", type_=postgresql.INET, postgresql_using="pg_temp.safe_inet(ip)")
     op.drop_constraint("ip_blacklist_created_by_fkey", "ip_blacklist", type_="foreignkey")
     op.create_foreign_key("fk_ip_blacklist_created_by", "ip_blacklist", "users", ["created_by"], ["id"], ondelete="SET NULL")
 

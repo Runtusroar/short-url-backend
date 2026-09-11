@@ -45,8 +45,8 @@ def test_upgrade_preserves_legacy_rows_and_backfills_log_snapshots(monkeypatch):
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         command.upgrade(_alembic_config(), "a9e56b03bf5f")
 
-        user_id, client_id, domain_id, link_id, target_id, log_id, grant_id = (
-            uuid.uuid4() for _ in range(7)
+        user_id, client_id, domain_id, link_id, target_id, log_id, grant_id, rule_id = (
+            uuid.uuid4() for _ in range(8)
         )
         with engine.begin() as connection:
             connection.execute(
@@ -90,10 +90,22 @@ def test_upgrade_preserves_legacy_rows_and_backfills_log_snapshots(monkeypatch):
                     """
                     INSERT INTO short_links
                         (id, domain_id, short_code, is_custom_alias, description, owner_id, is_active, created_at, updated_at, default_action)
-                    VALUES (:id, :domain_id, 'legacy-code', false, 'legacy note', :owner_id, true, now(), now(), 'allow')
+                    VALUES (:id, :domain_id, 'legacy-code', false, 'legacy note', :owner_id, true, now(), now(), 'deny')
                     """
                 ),
                 {"id": link_id, "domain_id": domain_id, "owner_id": user_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO access_rules
+                        (id, short_link_id, action, priority, countries, ua_platforms, referer_pattern,
+                         allow_proxy, allow_bot, is_active)
+                    VALUES (:id, :link_id, 'allow', 1, CAST(:countries AS jsonb), '[]'::jsonb, NULL,
+                            true, true, true)
+                    """
+                ),
+                {"id": rule_id, "link_id": link_id, "countries": '["cn"]'},
             )
             connection.execute(
                 text(
@@ -110,7 +122,7 @@ def test_upgrade_preserves_legacy_rows_and_backfills_log_snapshots(monkeypatch):
                     INSERT INTO access_logs
                         (id, short_link_id, domain_id, target_url_id, result, ip, country, ua_string, ua_platform, referer,
                          accessed_at, accessed_at_plus8, dedup_bucket)
-                    VALUES (:id, :link_id, :domain_id, :target_id, 'denied', 'unknown', 'CN', 'legacy ua', 'mobile',
+                    VALUES (:id, :link_id, :domain_id, :target_id, 'denied', 'not-an-ip', 'CN', 'legacy ua', 'mobile',
                             'https://referrer.test', now(), CURRENT_DATE, 1)
                     """
                 ),
@@ -144,6 +156,107 @@ def test_upgrade_preserves_legacy_rows_and_backfills_log_snapshots(monkeypatch):
                 text("SELECT access_level FROM user_domain_access WHERE user_id = :id"),
                 {"id": client_id},
             ).scalar_one() == "read"
+            policy = connection.execute(
+                text("SELECT country_mode, countries FROM link_policies WHERE short_link_id = :id"),
+                {"id": link_id},
+            ).mappings().one()
+            assert policy["country_mode"] == "allow"
+            assert policy["countries"] == ["CN"]
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def test_upgrade_refuses_unrepresentable_legacy_rule_before_dropping_it(monkeypatch):
+    """A destructive migration must stop when an unconditional deny cannot be encoded."""
+    schema = f"policy_gate_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        user_id, domain_id, link_id, rule_id = (uuid.uuid4() for _ in range(4))
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
+                    VALUES (:id, 'gate-admin', 'hash', 'admin', true, now(), now())
+                    """
+                ),
+                {"id": user_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO domains (id, name, is_active, is_default, created_at)
+                    VALUES (:id, 'gate.example', true, true, now())
+                    """
+                ),
+                {"id": domain_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO short_links
+                        (id, domain_id, short_code, is_custom_alias, owner_id, is_active, created_at, updated_at, default_action)
+                    VALUES (:id, :domain_id, 'gate-code', false, :owner_id, true, now(), now(), 'allow')
+                    """
+                ),
+                {"id": link_id, "domain_id": domain_id, "owner_id": user_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO access_rules
+                        (id, short_link_id, action, priority, countries, ua_platforms, referer_pattern,
+                         allow_proxy, allow_bot, is_active)
+                    VALUES (:id, :link_id, 'deny', 1, '[]'::jsonb, '[]'::jsonb, NULL, true, true, true)
+                    """
+                ),
+                {"id": rule_id, "link_id": link_id},
+            )
+
+        with pytest.raises(RuntimeError, match="unconditional deny"):
+            command.upgrade(_alembic_config(), "20260912_refactor")
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM access_rules")).scalar_one() == 1
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def test_upgrade_refuses_invalid_blacklist_ip_without_dropping_the_row(monkeypatch):
+    """A non-null exact-IP blacklist cannot silently discard an invalid legacy value."""
+    schema = f"blacklist_gate_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+    blacklist_id = uuid.uuid4()
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        with engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO ip_blacklist (id, ip, created_at) VALUES (:id, 'not-an-ip', now())"),
+                {"id": blacklist_id},
+            )
+
+        with pytest.raises(RuntimeError, match="invalid IP blacklist"):
+            command.upgrade(_alembic_config(), "20260912_refactor")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT ip FROM ip_blacklist WHERE id = :id"), {"id": blacklist_id}
+            ).scalar_one() == "not-an-ip"
     finally:
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

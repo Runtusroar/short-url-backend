@@ -51,15 +51,71 @@ def test_country_rule_with_opposite_default_becomes_equivalent_country_policy(
 
 
 def test_platform_rule_with_opposite_default_becomes_equivalent_platform_policy():
-    """Dropping a platform restriction would allow traffic previously denied."""
+    """A legacy mobile allowlist must use the normalized smartphone value."""
     result = convert_legacy_policy(
         default_action="deny",
-        rules=[legacy_rule(action="allow", ua_platforms=["mobile"])],
+        rules=[legacy_rule(action="allow", ua_platforms=["mobile"], allow_bot=False)],
     )
 
     assert result.convertible is True
     assert result.policy.platform_mode == "allow"
-    assert result.policy.platforms == ["mobile"]
+    assert result.policy.platforms == ["smartphone"]
+    assert result.policy.block_bot is True
+
+
+def test_platform_allow_rule_with_legacy_bot_bypass_refuses_conversion():
+    """A bot matched every legacy platform rule, unlike a normalized allowlist."""
+    result = convert_legacy_policy(
+        default_action="deny",
+        rules=[legacy_rule(action="allow", ua_platforms=["mobile"], allow_bot=True)],
+    )
+
+    assert result.convertible is False
+    assert "bot" in result.reason
+
+
+def test_country_values_normalize_case_without_changing_membership():
+    """Case-insensitive legacy country matching must become uppercase ISO-style values."""
+    result = convert_legacy_policy(
+        default_action="deny",
+        rules=[legacy_rule(action="allow", countries=["cn", "uS"])],
+    )
+
+    assert result.convertible is True
+    assert result.policy.countries == ["CN", "US"]
+
+
+def test_non_ascii_legacy_country_refuses_conversion():
+    """Uppercasing a non-ASCII token can change its legacy membership semantics."""
+    result = convert_legacy_policy(
+        default_action="deny",
+        rules=[legacy_rule(action="allow", countries=["ſs"])],
+    )
+
+    assert result.convertible is False
+    assert "countries" in result.reason
+
+
+def test_legacy_referer_url_glob_refuses_conversion():
+    """A full-URL legacy glob cannot be replaced by hostname policy semantics."""
+    result = convert_legacy_policy(
+        default_action="deny",
+        rules=[legacy_rule(action="allow", referer_pattern="https://example.test/*")],
+    )
+
+    assert result.convertible is False
+    assert "referer" in result.reason
+
+
+def test_unconditional_legacy_deny_refuses_conversion():
+    """An all-traffic legacy deny would be reversed by an off-dimension policy."""
+    result = convert_legacy_policy(
+        default_action="allow",
+        rules=[legacy_rule(action="deny")],
+    )
+
+    assert result.convertible is False
+    assert "unconditional deny" in result.reason
 
 
 @pytest.mark.parametrize(

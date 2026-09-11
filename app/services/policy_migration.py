@@ -8,6 +8,14 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 
+_LEGACY_PLATFORM_MAP = {
+    "mobile": "smartphone",
+    "pc": "desktop",
+    "tablet": "tablet",
+    "other": "other",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class ConvertedPolicy:
     country_mode: str = "off"
@@ -43,6 +51,29 @@ def _refusal(link: Any, reason: str) -> PolicyConversion:
     return PolicyConversion(False, reason=reason, affected_ids=_link_id(link))
 
 
+def _normalized_countries(values: Iterable[Any]) -> list[str] | None:
+    normalized = []
+    for value in values:
+        raw_country = str(value).strip()
+        if len(raw_country) != 2 or not raw_country.isascii() or not raw_country.isalpha():
+            return None
+        country = raw_country.upper()
+        if country not in normalized:
+            normalized.append(country)
+    return normalized
+
+
+def _normalized_platforms(values: Iterable[Any]) -> list[str] | None:
+    normalized = []
+    for value in values:
+        platform = _LEGACY_PLATFORM_MAP.get(str(value).strip().lower())
+        if platform is None:
+            return None
+        if platform not in normalized:
+            normalized.append(platform)
+    return normalized
+
+
 def convert_legacy_policy(
     link: Any = None,
     rules: Iterable[Any] = (),
@@ -75,10 +106,16 @@ def convert_legacy_policy(
     if {default_action, action} != {"allow", "deny"}:
         return _refusal(link, "rule action does not form a single exception to the default")
 
-    countries = list(_value(rule, "countries", []) or [])
-    platforms = list(_value(rule, "ua_platforms", []) or [])
+    countries = _normalized_countries(_value(rule, "countries", []) or [])
+    if countries is None:
+        return _refusal(link, "legacy countries are not safe two-letter values")
+    platforms = _normalized_platforms(_value(rule, "ua_platforms", []) or [])
+    if platforms is None:
+        return _refusal(link, "legacy platform value has no proven normalized mapping")
     referer_pattern = _value(rule, "referer_pattern")
     referer_patterns = [part.strip() for part in (referer_pattern or "").split(",") if part.strip()]
+    if referer_patterns:
+        return _refusal(link, "legacy referer patterns cannot be proven equivalent to hostname policies")
     dimensions = sum(bool(value) for value in (countries, platforms, referer_patterns))
     if dimensions > 1:
         return _refusal(link, "combined conditions cannot be represented without changing behavior")
@@ -87,6 +124,14 @@ def convert_legacy_policy(
     allow_bot = _value(rule, "allow_bot", True)
     if (not allow_proxy or not allow_bot) and action != "allow":
         return _refusal(link, "proxy or bot exceptions cannot preserve a deny rule")
+    if platforms and (action != "allow" or allow_bot):
+        return _refusal(link, "legacy bot handling cannot be preserved with a platform policy")
+
+    if not countries and not platforms:
+        if action == "deny":
+            return _refusal(link, "unconditional deny cannot be represented by a normalized policy")
+        if allow_proxy and allow_bot:
+            return PolicyConversion(True)
 
     mode = "allow" if action == "allow" else "block"
     policy = ConvertedPolicy(
