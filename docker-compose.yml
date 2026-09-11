@@ -50,6 +50,12 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SECRET_KEY: ${SECRET_KEY}
       GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/usr/share/GeoIP/GeoLite2-Country.mmdb}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      IP_REPUTATION_TTL_HOURS: ${IP_REPUTATION_TTL_HOURS:-168}
+      MAXMIND_TIMEOUT_SECONDS: ${MAXMIND_TIMEOUT_SECONDS:-1.5}
     volumes:
       - geoipdata:/usr/share/GeoIP:ro
     depends_on:
