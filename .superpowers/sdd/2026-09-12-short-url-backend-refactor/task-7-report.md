@@ -172,3 +172,67 @@ It still stops only during collection on the same two Task 9-deferred legacy red
 - The cached provider factory performs no network request or client construction when credentials are absent, while tests inject only the provider boundary, not decision behavior.
 - Both domain lookup and snapshot rendering call the same strict authority parsing rules; malformed input therefore cannot cause a 500 through Starlette URL parsing or match a canonical domain accidentally.
 - SQLAlchemy persistence errors remain the sole suppressed errors at the logging boundary. Provider errors continue to be deliberately fail-open in the already-established proxy service.
+
+---
+
+## Review fix round 2
+
+### Delivered
+
+- Replaced the opaque provider cache with a small configuration-keyed cache that can enumerate cached clients.
+- Added `close_proxy_provider()`: it clears the cache first, then awaits each provider's optional close method. This makes test lifetimes isolated and prevents a closed client from being reused.
+- Added `MaxMindProxyClient.close()` and invoked the factory reset from FastAPI lifespan shutdown.
+- Used a nested `finally` so a Redis shutdown exception cannot prevent the independent MaxMind client from closing.
+- Strengthened the provider-timeout redirect test to assert the provider actually received the expected `(ip, 1.5)` call.
+
+### TDD evidence
+
+Initial RED command:
+
+```bash
+uv run pytest tests/test_proxy.py tests/test_main.py tests/api/test_redirect.py -q
+```
+
+It failed at collection because `close_proxy_provider` did not yet exist:
+
+```text
+ImportError: cannot import name 'close_proxy_provider' from 'app.services.proxy'
+```
+
+The shutdown-exception behavior was also written and observed RED before the nested-finally change:
+
+```bash
+uv run pytest tests/test_main.py::test_lifespan_closes_proxy_even_if_redis_shutdown_fails -q
+```
+
+```text
+assert 0 == 1
+```
+
+GREEN after implementation:
+
+```text
+41 passed in 1.49s
+```
+
+Final focused verification:
+
+```bash
+uv run pytest tests/api/test_redirect.py tests/test_request_metadata.py tests/test_short_code.py tests/test_proxy.py tests/test_main.py -q
+git diff --check
+uv run python -m compileall -q app
+```
+
+```text
+50 passed in 1.48s
+```
+
+`git diff --check` and `compileall` completed without output.
+
+The full suite was run once and remains blocked only by the known Task 9-deferred legacy redirect imports in `tests/test_redirect.py` and `tests/test_services_edge.py` (`2 errors in 0.13s`).
+
+### Self-review
+
+- Reuse is retained for a stable `(account_id, license_key, timeout)` tuple during an application lifetime.
+- Cache clearing precedes awaiting closes, so a later startup never receives a closed client even if a close raises.
+- Both Redis and the proxy provider get independent cleanup guarantees on shutdown; Redis errors still propagate rather than being hidden.

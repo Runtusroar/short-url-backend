@@ -8,7 +8,8 @@ from sqlalchemy.dialects.postgresql import INET
 
 from app.db import AsyncSessionLocal
 from app.db.models import IpReputation
-from app.services.proxy import InsufficientBalanceError, ProxyProviderError, get_proxy_result
+from app.services import proxy
+from app.services.proxy import InsufficientBalanceError, ProxyProviderError, close_proxy_provider, get_proxy_provider, get_proxy_result
 
 
 class Provider:
@@ -22,6 +23,40 @@ class Provider:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+async def test_provider_factory_reuses_one_client_and_close_resets_it(monkeypatch):
+    """Reconstructing or retaining a client after shutdown would leak connections."""
+    await close_proxy_provider()
+    created = []
+
+    class FakeMaxMindClient:
+        def __init__(self, account_id, license_key, timeout):
+            self.config = (account_id, license_key, timeout)
+            self.close_calls = 0
+            created.append(self)
+
+        async def close(self):
+            self.close_calls += 1
+
+    monkeypatch.setattr(proxy, "MaxMindProxyClient", FakeMaxMindClient)
+    monkeypatch.setattr(proxy.settings, "maxmind_account_id", 123)
+    monkeypatch.setattr(proxy.settings, "maxmind_license_key", "test-license")
+    monkeypatch.setattr(proxy.settings, "maxmind_timeout_seconds", 1.5)
+
+    first = get_proxy_provider()
+    second = get_proxy_provider()
+
+    assert first is second
+    assert len(created) == 1
+
+    await close_proxy_provider()
+    assert created[0].close_calls == 1
+
+    third = get_proxy_provider()
+    assert third is not first
+    assert len(created) == 2
+    await close_proxy_provider()
 
 
 @pytest.mark.parametrize(

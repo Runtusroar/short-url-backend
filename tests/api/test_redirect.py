@@ -360,6 +360,7 @@ async def test_non_bot_proxy_provider_failure_fails_open_and_is_not_persisted(cl
     )
 
     assert response.headers["location"] == "https://allowed.example/landing"
+    assert provider.calls == [(ip, 1.5)]
     assert await _reputation(ip) is None
     assert (await _latest_log(link.id)).result == "allowed"
 

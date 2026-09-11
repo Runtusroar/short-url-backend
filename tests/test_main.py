@@ -1,7 +1,8 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import app
+from app.main import app, lifespan
 
 
 def test_health():
@@ -20,3 +21,49 @@ def test_blank_maxmind_settings_are_none(monkeypatch):
 
     assert configured.maxmind_account_id is None
     assert configured.maxmind_license_key is None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_the_proxy_provider(monkeypatch):
+    """Skipping the shutdown close would leak the long-lived HTTP client."""
+    closed = 0
+
+    async def close_provider():
+        nonlocal closed
+        closed += 1
+
+    monkeypatch.setattr("app.main.settings.redis_url", "")
+    monkeypatch.setattr("app.main.close_proxy_provider", close_provider)
+
+    async with lifespan(app):
+        pass
+
+    assert closed == 1
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_proxy_even_if_redis_shutdown_fails(monkeypatch):
+    """A Redis close error must not leak the independent MaxMind client."""
+    closed = 0
+
+    class FailingRedis:
+        async def aclose(self):
+            raise RuntimeError("redis shutdown failed")
+
+    async def init_limiter(_redis):
+        return None
+
+    async def close_provider():
+        nonlocal closed
+        closed += 1
+
+    monkeypatch.setattr("app.main.settings.redis_url", "redis://test")
+    monkeypatch.setattr("app.main.redis.from_url", lambda *_args, **_kwargs: FailingRedis())
+    monkeypatch.setattr("app.main.FastAPILimiter.init", init_limiter)
+    monkeypatch.setattr("app.main.close_proxy_provider", close_provider)
+
+    with pytest.raises(RuntimeError, match="redis shutdown failed"):
+        async with lifespan(app):
+            pass
+
+    assert closed == 1

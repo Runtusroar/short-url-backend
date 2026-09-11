@@ -1,11 +1,11 @@
 """Persisted, fail-open IP proxy reputation lookups."""
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import lru_cache
 from typing import Any, Protocol
 
 from geoip2.webservice import AsyncClient as MaxMindAsyncClient
@@ -41,21 +41,39 @@ class MaxMindProxyClient:
     async def lookup(self, ip: str, *, timeout: float) -> object:
         return await asyncio.wait_for(self._client.insights(ip), timeout=timeout)
 
+    async def close(self) -> None:
+        await self._client.close()
 
-@lru_cache(maxsize=4)
-def _configured_proxy_provider(account_id: int, license_key: str, timeout: float) -> ProxyClient:
-    return MaxMindProxyClient(account_id, license_key, timeout)
+
+_proxy_providers: dict[tuple[int, str, float], ProxyClient] = {}
 
 
 def get_proxy_provider() -> ProxyClient | None:
     """Return a reused MaxMind client only when credentials are configured."""
     if settings.maxmind_account_id is None or not settings.maxmind_license_key:
         return None
-    return _configured_proxy_provider(
+    key = (
         settings.maxmind_account_id,
         settings.maxmind_license_key,
         settings.maxmind_timeout_seconds,
     )
+    provider = _proxy_providers.get(key)
+    if provider is None:
+        provider = MaxMindProxyClient(*key)
+        _proxy_providers[key] = provider
+    return provider
+
+
+async def close_proxy_provider() -> None:
+    """Close and forget every cached provider so tests and future lifespans isolate cleanly."""
+    providers = list(_proxy_providers.values())
+    _proxy_providers.clear()
+    for provider in providers:
+        close = getattr(provider, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
 
 @dataclass(frozen=True, slots=True)

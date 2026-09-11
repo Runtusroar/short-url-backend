@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.exceptions import register_exception_handlers
 from app.rate_limit import rate_limit, user_identifier
 from app.routers import logs
+from app.services.proxy import close_proxy_provider
 
 
 @asynccontextmanager
@@ -19,9 +20,14 @@ async def lifespan(app: FastAPI):
         await FastAPILimiter.init(r)
     else:
         r = None
-    yield
-    if r:
-        await r.aclose()
+    try:
+        yield
+    finally:
+        try:
+            if r:
+                await r.aclose()
+        finally:
+            await close_proxy_provider()
 
 
 app = FastAPI(title="Short URL Service", lifespan=lifespan)
