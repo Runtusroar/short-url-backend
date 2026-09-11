@@ -1,18 +1,17 @@
-from user_agents import parse
+from app.services.user_agent import parse_user_agent
 
 
 def get_platform(ua_string: str | None) -> str | None:
     if not ua_string:
         return None
-    ua = parse(ua_string)
-    if ua.is_mobile:
+    platform = parse_user_agent(ua_string).platform
+    if platform == "smartphone":
         return "mobile"
-    if ua.is_tablet:
+    if platform == "tablet":
         return "tablet"
-    if ua.is_pc:
+    if platform == "desktop":
         return "pc"
-    if ua.is_bot:
+    if platform == "bot":
         return "bot"
     return "other"
-
 

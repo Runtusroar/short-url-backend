@@ -13,7 +13,7 @@ dependencies = [
     "bcrypt==5.0.0",
     "pyjwt==2.8.0",
     "python-multipart==0.0.9",
-    "user-agents==2.2.0",
+    "device-detector==6.4.0",
     "geoip2==4.8.0",
     "redis==5.0.7",
     "fastapi-limiter==0.1.6",
