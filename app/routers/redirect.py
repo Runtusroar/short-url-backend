@@ -3,7 +3,8 @@ from ipaddress import ip_address
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request, Response
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -47,7 +48,7 @@ def _is_proxy(request: Request) -> bool:
 
 
 async def _is_blacklisted(db: AsyncSession, ip: str) -> bool:
-    result = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == ip))
+    result = await db.execute(select(IpBlacklist).where(IpBlacklist.ip == cast(ip, INET)))
     return result.scalar_one_or_none() is not None
 
 

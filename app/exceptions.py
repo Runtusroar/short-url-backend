@@ -1,16 +1,20 @@
 """Global exception handling and custom API errors."""
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.errors import ErrorCode
 
 
 class APIError(Exception):
     """Base class for all API errors that should be returned to the client."""
 
-    def __init__(self, code: str, message: str, status_code: int = 400):
+    def __init__(self, code: str | ErrorCode, message: str, status_code: int = 400):
         self.code = code
         self.message = message
         self.status_code = status_code
@@ -20,16 +24,16 @@ class APIError(Exception):
 class NotFoundError(APIError):
     def __init__(self, resource: str = "资源"):
         super().__init__(
-            code="NOT_FOUND",
+            code=ErrorCode.NOT_FOUND,
             message=f"{resource}不存在",
             status_code=status.HTTP_404_NOT_FOUND,
         )
 
 
 class ConflictError(APIError):
-    def __init__(self, message: str = "资源冲突"):
+    def __init__(self, message: str = "资源冲突", code: str | ErrorCode = ErrorCode.CONFLICT):
         super().__init__(
-            code="CONFLICT",
+            code=code,
             message=message,
             status_code=status.HTTP_409_CONFLICT,
         )
@@ -38,7 +42,7 @@ class ConflictError(APIError):
 class PermissionDeniedError(APIError):
     def __init__(self, message: str = "无权访问"):
         super().__init__(
-            code="PERMISSION_DENIED",
+            code=ErrorCode.PERMISSION_DENIED,
             message=message,
             status_code=status.HTTP_403_FORBIDDEN,
         )
@@ -47,7 +51,7 @@ class PermissionDeniedError(APIError):
 class UnauthorizedError(APIError):
     def __init__(self, message: str = "未授权"):
         super().__init__(
-            code="UNAUTHORIZED",
+            code=ErrorCode.UNAUTHORIZED,
             message=message,
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
@@ -92,30 +96,42 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def api_error_handler(request: Request, exc: APIError):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": exc.code, "message": exc.message},
+            content={"code": exc.code, "message": exc.message, "details": None},
         )
 
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException):
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": f"HTTP_{exc.status_code}", "message": exc.detail},
+            content={
+                "code": f"HTTP_{exc.status_code}",
+                "message": exc.detail,
+                "details": None,
+            },
         )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         message = _format_validation_errors(exc.errors())
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"code": "VALIDATION_ERROR", "message": message},
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "code": ErrorCode.VALIDATION_ERROR,
+                "message": message,
+                "details": jsonable_encoder(exc.errors()),
+            },
         )
 
     @app.exception_handler(ValidationError)
     async def pydantic_validation_error_handler(request: Request, exc: ValidationError):
         message = _format_validation_errors(exc.errors())
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"code": "VALIDATION_ERROR", "message": message},
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "code": ErrorCode.VALIDATION_ERROR,
+                "message": message,
+                "details": jsonable_encoder(exc.errors()),
+            },
         )
 
     @app.exception_handler(IntegrityError)
@@ -123,8 +139,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={
-                "code": "CONFLICT",
+                "code": ErrorCode.CONFLICT,
                 "message": _integrity_error_message(exc),
+                "details": None,
             },
         )
 
@@ -133,5 +150,5 @@ def register_exception_handlers(app: FastAPI) -> None:
         # In production you would log the traceback here.
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"code": "INTERNAL_ERROR", "message": "服务器内部错误"},
+            content={"code": "INTERNAL_ERROR", "message": "服务器内部错误", "details": None},
         )
