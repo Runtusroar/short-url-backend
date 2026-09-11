@@ -1,6 +1,6 @@
 from starlette.requests import Request
 
-from app.routers.redirect import _get_client_ip, _is_proxy
+from app.services.request_metadata import extract_request_metadata
 
 
 def _request(*, headers: dict[str, str] | None = None, client_ip: str = "172.25.0.1") -> Request:
@@ -14,52 +14,55 @@ def _request(*, headers: dict[str, str] | None = None, client_ip: str = "172.25.
             "http_version": "1.1",
             "method": "GET",
             "scheme": "http",
-            "path": "/test",
-            "raw_path": b"/test",
-            "query_string": b"",
+            "path": "/CampaignA",
+            "raw_path": b"/CampaignA",
+            "query_string": b"source=test",
             "headers": encoded_headers,
             "client": (client_ip, 12345),
-            "server": ("testserver", 80),
+            "server": ("origin.example", 80),
         }
     )
 
 
-def test_get_client_ip_prefers_nginx_sanitized_real_ip_over_forwarded_chain():
+def test_trusted_proxy_headers_define_the_snapshotted_client_and_request_url(monkeypatch):
+    """Ignoring trusted forwarding would log the proxy instead of the visitor."""
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
     request = _request(
         headers={
+            "Host": "origin.example",
             "X-Real-IP": "203.0.113.24",
             "X-Forwarded-For": "198.51.100.77, 172.64.1.10",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "a.example",
+            "Referer": "https://partner.example/article",
+            "User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
         }
     )
 
-    assert _get_client_ip(request) == "203.0.113.24"
+    metadata = extract_request_metadata(request)
+
+    assert metadata.ip == "203.0.113.24"
+    assert metadata.request_url == "https://a.example/CampaignA?source=test"
+    assert metadata.country is None
+    assert metadata.referer == "https://partner.example/article"
+    assert metadata.ua.raw == "Googlebot/2.1 (+http://www.google.com/bot.html)"
 
 
-def test_get_client_ip_accepts_ipv6_real_ip():
-    request = _request(headers={"X-Real-IP": "2001:db8:0:1::42"})
-
-    assert _get_client_ip(request) == "2001:db8:0:1::42"
-
-
-def test_get_client_ip_ignores_invalid_forwarded_values():
+def test_untrusted_forwarded_headers_are_ignored_and_invalid_client_ip_is_none(monkeypatch):
+    """Trusting a spoofed forwarding chain would let callers forge audit fields."""
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", False)
     request = _request(
         headers={
-            "X-Real-IP": "not-an-ip",
-            "X-Forwarded-For": "also-not-an-ip, 172.64.1.10",
-        },
-        client_ip="172.25.0.1",
-    )
-
-    assert _get_client_ip(request) == "172.25.0.1"
-
-
-def test_reverse_proxy_headers_do_not_mean_the_client_uses_a_vpn():
-    request = _request(
-        headers={
+            "Host": "a.example",
             "X-Real-IP": "203.0.113.24",
-            "X-Forwarded-For": "203.0.113.24",
-            "Via": "cloudflare",
-        }
+            "X-Forwarded-For": "198.51.100.77",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "spoofed.example",
+        },
+        client_ip="not-an-ip",
     )
 
-    assert _is_proxy(request) is False
+    metadata = extract_request_metadata(request)
+
+    assert metadata.ip is None
+    assert metadata.request_url == "http://a.example/CampaignA?source=test"
