@@ -66,3 +66,33 @@ def test_untrusted_forwarded_headers_are_ignored_and_invalid_client_ip_is_none(m
 
     assert metadata.ip is None
     assert metadata.request_url == "http://a.example/CampaignA?source=test"
+
+
+def test_trusted_x_real_ip_wins_then_xff_first_address_is_used(monkeypatch):
+    """Using a later XFF hop would record a proxy rather than the visitor."""
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+
+    real_ip = extract_request_metadata(
+        _request(headers={"Host": "a.example", "X-Real-IP": "2001:db8::42", "X-Forwarded-For": "203.0.113.9"})
+    )
+    xff_ip = extract_request_metadata(
+        _request(headers={"Host": "a.example", "X-Forwarded-For": "203.0.113.9, 198.51.100.2"})
+    )
+    invalid_ip = extract_request_metadata(
+        _request(headers={"Host": "a.example", "X-Real-IP": "invalid", "X-Forwarded-For": "also-invalid"})
+    )
+
+    assert real_ip.ip == "2001:db8::42"
+    assert xff_ip.ip == "203.0.113.9"
+    assert invalid_ip.ip is None
+
+
+def test_authority_parser_normalizes_dns_and_ipv6_ports(monkeypatch):
+    """Changing the authority representation would break domain lookup and audit URLs."""
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", False)
+
+    dns = extract_request_metadata(_request(headers={"Host": "Example.COM.:443"}))
+    ipv6 = extract_request_metadata(_request(headers={"Host": "[2001:db8::7]:8443"}))
+
+    assert dns.request_url == "http://example.com:443/CampaignA?source=test"
+    assert ipv6.request_url == "http://[2001:db8::7]:8443/CampaignA?source=test"

@@ -5,8 +5,10 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Protocol
 
+from geoip2.webservice import AsyncClient as MaxMindAsyncClient
 from sqlalchemy import cast, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,32 @@ class InsufficientBalanceError(ProxyProviderError):
 class ProxyClient(Protocol):
     async def lookup(self, ip: str, *, timeout: float) -> object:
         """Return one successful provider response for an IP."""
+
+
+class MaxMindProxyClient:
+    """Long-lived adapter around MaxMind Insights' asynchronous client."""
+
+    def __init__(self, account_id: int, license_key: str, timeout: float):
+        self._client = MaxMindAsyncClient(account_id, license_key, timeout=timeout)
+
+    async def lookup(self, ip: str, *, timeout: float) -> object:
+        return await asyncio.wait_for(self._client.insights(ip), timeout=timeout)
+
+
+@lru_cache(maxsize=4)
+def _configured_proxy_provider(account_id: int, license_key: str, timeout: float) -> ProxyClient:
+    return MaxMindProxyClient(account_id, license_key, timeout)
+
+
+def get_proxy_provider() -> ProxyClient | None:
+    """Return a reused MaxMind client only when credentials are configured."""
+    if settings.maxmind_account_id is None or not settings.maxmind_license_key:
+        return None
+    return _configured_proxy_provider(
+        settings.maxmind_account_id,
+        settings.maxmind_license_key,
+        settings.maxmind_timeout_seconds,
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import cast, select
@@ -14,25 +13,24 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.db import AsyncSessionLocal
-from app.db.models import AccessResult, Domain, IpBlacklist, LinkPolicy, ShortLink
+from app.db.models import AccessResult, Domain, IpBlacklist, ShortLink
 from app.exceptions import NotFoundError
 from app.services.access import AccessContext, decide_access, target_error_decision
 from app.services.access_log import AccessLogSnapshot, write_access_log
 from app.services.redirect import choose_target
 from app.services.request_metadata import RequestMetadata, extract_request_metadata, request_host
+from app.services.proxy import get_proxy_provider
 
 router = APIRouter(tags=["redirect"])
 
 
-def _domain_name(host: str) -> str:
-    """Strip the optional port from a Host header before looking up a domain."""
-    return (urlsplit(f"//{host}").hostname or "").lower()
-
-
 async def _resolve_domain(db: AsyncSession, request: Request) -> Domain:
+    host = request_host(request)
+    if host is None:
+        raise NotFoundError("域名")
     domain = await db.scalar(
         select(Domain).where(
-            Domain.name == _domain_name(request_host(request)),
+            Domain.name == host,
             Domain.is_active.is_(True),
         )
     )
@@ -109,6 +107,9 @@ async def redirect(short_code: str, request: Request, db: AsyncSession = Depends
             referer=metadata.referer,
         ),
         blacklisted=await _blacklist_entry(db, metadata.ip) or False,
+        provider=get_proxy_provider(),
+        db=db,
+        now=datetime.now(timezone.utc),
     )
     target = choose_target(link.target_urls, decision.result)
     if target is None:

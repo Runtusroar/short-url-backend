@@ -1,11 +1,15 @@
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import AsyncSessionLocal
-from app.db.models import AccessLog, Domain, IpBlacklist, LinkPolicy, ShortLink, TargetUrl
+from app.db.models import AccessLog, Domain, IpBlacklist, IpReputation, LinkPolicy, ShortLink, TargetUrl
+from app.services.access_log import AccessLogSnapshot, write_access_log
 
 
 async def _make_redirect_link(
@@ -110,6 +114,7 @@ async def test_redirect_uses_trusted_forwarding_and_writes_an_immutable_bot_snap
     assert log.result == "blocked"
     assert log.block_reason == "bot"
     assert log.ua_bot_name == "Googlebot"
+    assert response.content == b""
 
 
 @pytest.mark.asyncio
@@ -228,6 +233,9 @@ async def test_log_storage_failure_does_not_change_the_redirect_response(client,
     domain, _ = await _make_redirect_link(host=f"{uuid.uuid4().hex}.example")
 
     class FailingSession:
+        def __init__(self):
+            self.rolled_back = False
+
         async def __aenter__(self):
             return self
 
@@ -241,11 +249,224 @@ async def test_log_storage_failure_does_not_change_the_redirect_response(client,
             raise SQLAlchemyError("database unavailable")
 
         async def rollback(self):
-            return None
+            self.rolled_back = True
 
-    monkeypatch.setattr("app.api.redirect.AsyncSessionLocal", lambda: FailingSession())
+
+    failing_session = FailingSession()
+    monkeypatch.setattr("app.api.redirect.AsyncSessionLocal", lambda: failing_session)
 
     response = await client.get("/CampaignA", headers={"Host": domain.name}, follow_redirects=False)
 
     assert response.status_code == 302
     assert response.headers["location"] == "https://allowed.example/landing"
+    assert failing_session.rolled_back is True
+
+
+@dataclass
+class Provider:
+    response: object | None = None
+    error: Exception | None = None
+
+    def __post_init__(self):
+        self.calls: list[tuple[str, float]] = []
+
+    async def lookup(self, ip: str, *, timeout: float):
+        self.calls.append((ip, timeout))
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+async def _reputation(ip: str):
+    async with AsyncSessionLocal() as session:
+        return await session.scalar(select(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+
+
+@pytest.mark.asyncio
+async def test_non_bot_proxy_cache_hit_blocks_without_calling_the_provider(client, monkeypatch):
+    """Skipping cached proxy facts would make paid lookups and routing inconsistent."""
+    ip = "203.0.113.141"
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True}
+    )
+    async with AsyncSessionLocal() as session:
+        now = datetime.now(timezone.utc)
+        session.add(
+            IpReputation(
+                ip=ip,
+                is_proxy=True,
+                proxy_type="anonymous_vpn",
+                checked_at=now - timedelta(minutes=1),
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+        await session.commit()
+    provider = Provider(error=AssertionError("cache hit must not query provider"))
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+    monkeypatch.setattr("app.api.redirect.get_proxy_provider", lambda: provider)
+
+    response = await client.get(
+        "/CampaignA", headers={"Host": domain.name, "X-Real-IP": ip}, follow_redirects=False
+    )
+
+    assert response.headers["location"] == "https://blocked.example/landing"
+    assert provider.calls == []
+    assert (await _latest_log(link.id)).block_reason == "proxy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_location", "expected_proxy"),
+    [
+        ({"is_proxy": True, "proxy_type": "anonymous_vpn"}, "https://blocked.example/landing", True),
+        ({"is_proxy": False, "proxy_type": None}, "https://allowed.example/landing", False),
+    ],
+)
+async def test_non_bot_fresh_proxy_reputation_is_persisted_and_applied(
+    client, monkeypatch, response, expected_location, expected_proxy
+):
+    """Ignoring fresh provider facts would make the block_proxy policy ineffective."""
+    ip = f"203.0.113.{150 if expected_proxy else 151}"
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True}
+    )
+    provider = Provider(response=response)
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+    monkeypatch.setattr("app.api.redirect.get_proxy_provider", lambda: provider)
+
+    response = await client.get(
+        "/CampaignA", headers={"Host": domain.name, "X-Real-IP": ip}, follow_redirects=False
+    )
+
+    assert response.headers["location"] == expected_location
+    assert provider.calls == [(ip, 1.5)]
+    assert (await _reputation(ip)).is_proxy is expected_proxy
+    assert (await _latest_log(link.id)).result == ("blocked" if expected_proxy else "allowed")
+
+
+@pytest.mark.asyncio
+async def test_non_bot_proxy_provider_failure_fails_open_and_is_not_persisted(client, monkeypatch):
+    """Treating an unavailable provider as a proxy would block otherwise valid visitors."""
+    ip = "203.0.113.152"
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True}
+    )
+    provider = Provider(error=TimeoutError())
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+    monkeypatch.setattr("app.api.redirect.get_proxy_provider", lambda: provider)
+
+    response = await client.get(
+        "/CampaignA", headers={"Host": domain.name, "X-Real-IP": ip}, follow_redirects=False
+    )
+
+    assert response.headers["location"] == "https://allowed.example/landing"
+    assert await _reputation(ip) is None
+    assert (await _latest_log(link.id)).result == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_non_bot_proxy_policy_fails_open_when_maxmind_is_not_configured(client, monkeypatch):
+    """Constructing a provider without credentials would make local redirects fail unexpectedly."""
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True}
+    )
+    monkeypatch.setattr("app.services.proxy.settings.maxmind_account_id", None)
+    monkeypatch.setattr("app.services.proxy.settings.maxmind_license_key", None)
+
+    response = await client.get("/CampaignA", headers={"Host": domain.name}, follow_redirects=False)
+
+    assert response.headers["location"] == "https://allowed.example/landing"
+    assert (await _latest_log(link.id)).result == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_short_code_is_case_sensitive_and_malformed_authorities_do_not_match(client, monkeypatch):
+    """Case folding codes or accepting malformed authority could route a different link."""
+    domain, _ = await _make_redirect_link(host="example.com")
+    assert (
+        await client.get("/campaigna", headers={"Host": domain.name}, follow_redirects=False)
+    ).status_code == 404
+
+    for authority in [
+        "user@example.com",
+        "example.com/path",
+        "example.com:port",
+        "example.com:65536",
+        "[2001:db8::1",
+        "2001:db8::1",
+    ]:
+        response = await client.get("/CampaignA", headers={"Host": authority}, follow_redirects=False)
+        assert response.status_code == 404
+
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+    response = await client.get(
+        "/CampaignA",
+        headers={"Host": domain.name, "X-Forwarded-Host": "user@example.com"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_normalized_dns_and_ipv6_authorities_select_their_exact_domain(client):
+    """Dropping ports or IPv6 brackets from snapshots would make auditing ambiguous."""
+    dns_domain, dns_link = await _make_redirect_link(host="canonical.example")
+    ipv6_domain, ipv6_link = await _make_redirect_link(host="2001:db8::8")
+
+    dns = await client.get("/CampaignA", headers={"Host": "CANONICAL.EXAMPLE.:443"}, follow_redirects=False)
+    ipv6 = await client.get("/CampaignA", headers={"Host": "[2001:db8::8]:8443"}, follow_redirects=False)
+
+    assert dns.headers["location"] == "https://allowed.example/landing"
+    assert ipv6.headers["location"] == "https://allowed.example/landing"
+    assert dns_domain.name == "canonical.example"
+    assert ipv6_domain.name == "2001:db8::8"
+    assert (await _latest_log(dns_link.id)).request_url == "http://canonical.example:443/CampaignA"
+    assert (await _latest_log(ipv6_link.id)).request_url == "http://[2001:db8::8]:8443/CampaignA"
+
+
+@pytest.mark.asyncio
+async def test_request_user_agent_is_parsed_once(client, monkeypatch):
+    """Parsing twice per request wastes work and can split policy from its audit snapshot."""
+    from app.services.request_metadata import parse_user_agent as real_parse_user_agent
+
+    domain, _ = await _make_redirect_link(host=f"{uuid.uuid4().hex}.example")
+    calls = 0
+
+    def counting_parse_user_agent(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_parse_user_agent(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.request_metadata.parse_user_agent", counting_parse_user_agent)
+    response = await client.get(
+        "/CampaignA", headers={"Host": domain.name, "User-Agent": "Mozilla/5.0"}, follow_redirects=False
+    )
+
+    assert response.status_code == 302
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_log_writer_propagates_programming_errors():
+    """Catching arbitrary exceptions would hide implementation bugs at the persistence boundary."""
+    class BrokenSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def add(self, _entry):
+            raise RuntimeError("programming error")
+
+    snapshot = AccessLogSnapshot(
+        short_link_id=uuid.uuid4(), domain_id=uuid.uuid4(), target_url_id=None,
+        request_url="https://example.com/CampaignA", domain_name="example.com", short_code="CampaignA",
+        short_link_note=None, target_url=None, result="allowed", block_reason=None, block_detail=None,
+        ip=None, country_code=None, referer=None, ua_raw=None, ua_browser=None, ua_browser_version=None,
+        ua_os=None, ua_os_version=None, ua_device_type=None, ua_device_brand=None, ua_device_model=None,
+        ua_bot_name=None, accessed_at=datetime.now(timezone.utc),
+    )
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        await write_access_log(lambda: BrokenSession(), snapshot)

@@ -96,3 +96,79 @@ Those tests import the retired legacy `app.services.redirect` surface. Removing/
 ## Concerns
 
 None for Task 7. The full-suite collection failures above are known retired-interface coverage awaiting the explicitly scoped Task 9 cleanup.
+
+---
+
+## Review fix round 1
+
+### Delivered
+
+- Connected non-bot `block_proxy` policy decisions to `decide_access` with the request session, a UTC clock, and an injectable `get_proxy_provider()` boundary.
+- Added a reused MaxMind Insights async-client adapter. It is cached by configured credentials/timeout rather than constructed per request; absent credentials return `None`, so the policy stays fail-open.
+- Replaced permissive `urlsplit` host handling with one strict authority parser shared by routing and request-URL snapshots. It canonicalizes DNS trailing dots and legal ports, accepts bracketed IPv6, and rejects userinfo, path/query/fragment syntax, nonnumeric/out-of-range ports, unpaired brackets, and unbracketed IPv6.
+- Avoided `request.url` for scheme/path/query extraction, because Starlette can raise while parsing a malformed Host before the route returns its intended 404.
+
+### Added coverage
+
+- HTTP route coverage for non-bot proxy cache hits, fresh proxy and non-proxy MaxMind responses, provider timeout fail-open/no persistence, and absent MaxMind credentials fail-open.
+- Route coverage for exact short-code casing; malformed Host and trusted malformed Forwarded-Host values returning 404; normalized DNS and IPv6 authorities with exact snapshot URLs.
+- Metadata coverage for trusted `X-Real-IP` precedence, first `X-Forwarded-For` fallback, invalid forwarding values becoming `None`, and DNS/IPv6 port snapshots.
+- Review-adjacent assertions for bodyless GET, a single UA parse per request, SQLAlchemy rollback plus fail-open, and propagation of non-SQLAlchemy programming errors.
+
+The earlier Task 7 tests already covered trusted vs. untrusted forwarding and HEAD bodyless redirects; this round added the missing XFF, exact-authority, GET-body, UA, and writer-boundary assertions.
+
+### TDD evidence
+
+RED command:
+
+```bash
+uv run pytest tests/api/test_redirect.py tests/test_request_metadata.py -q
+```
+
+Relevant failing output before implementation:
+
+```text
+AttributeError: module 'app.api.redirect' has no attribute 'get_proxy_provider'
+FAILED ... malformed_authorities_do_not_match (302 instead of 404)
+FAILED ... normalized_dns_and_ipv6_authorities (missing Location)
+FAILED ... authority_parser_normalizes_dns_and_ipv6_ports (trailing dot retained)
+7 failed, 17 passed
+```
+
+GREEN command after the implementation:
+
+```bash
+uv run pytest tests/api/test_redirect.py tests/test_request_metadata.py -q
+```
+
+```text
+24 passed in 1.35s
+```
+
+Final focused verification:
+
+```bash
+uv run pytest tests/api/test_redirect.py tests/test_request_metadata.py tests/test_short_code.py tests/test_proxy.py -q
+git diff --check
+uv run python -m compileall -q app
+```
+
+```text
+45 passed in 1.43s
+```
+
+`git diff --check` and `compileall` completed without output.
+
+The required full run was performed once during this fix round:
+
+```bash
+uv run pytest -q
+```
+
+It still stops only during collection on the same two Task 9-deferred legacy redirect imports (`tests/test_redirect.py` and `tests/test_services_edge.py`), with `2 errors in 0.11s`.
+
+### Self-review
+
+- The cached provider factory performs no network request or client construction when credentials are absent, while tests inject only the provider boundary, not decision behavior.
+- Both domain lookup and snapshot rendering call the same strict authority parsing rules; malformed input therefore cannot cause a 500 through Starlette URL parsing or match a canonical domain accidentally.
+- SQLAlchemy persistence errors remain the sole suppressed errors at the logging boundary. Provider errors continue to be deliberately fail-open in the already-established proxy service.
