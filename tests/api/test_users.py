@@ -1,6 +1,15 @@
+import asyncio
 import uuid
+from uuid import UUID
 
 import pytest
+from sqlalchemy import func, select, update
+
+from app.api import users as users_api
+from app.db import AsyncSessionLocal
+from app.db.models import User, UserRole
+from app.exceptions import ConflictError
+from app.schemas.user import UserUpdate
 
 
 def auth(token: str) -> dict[str, str]:
@@ -167,3 +176,67 @@ async def test_cannot_deactivate_the_last_active_administrator(client, admin_tok
 
     assert response.status_code == 409
     assert response.json()["code"] == "LAST_ADMIN_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_admin_removals_leave_one_active_administrator(client, admin_token, monkeypatch):
+    async def create_admin() -> dict[str, object]:
+        response = await client.post(
+            "/api/users",
+            headers=auth(admin_token),
+            json={
+                "username": f"concurrent-admin-{uuid.uuid4().hex[:10]}",
+                "password": "admin-pass",
+                "role": "admin",
+                "domain_access": [],
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    first_admin, second_admin = await create_admin(), await create_admin()
+    async with AsyncSessionLocal() as session:
+        seed_admin = await session.scalar(select(User).where(User.username == "admin"))
+        assert seed_admin is not None
+        seed_admin_id = seed_admin.id
+        seed_admin.is_active = False
+        await session.commit()
+
+    barrier = asyncio.Barrier(2)
+    original_assert = users_api._assert_not_last_active_admin
+
+    async def synchronize_before_count(db, user, payload):
+        try:
+            await asyncio.wait_for(barrier.wait(), timeout=0.25)
+        except TimeoutError:
+            pass
+        return await original_assert(db, user, payload)
+
+    monkeypatch.setattr(users_api, "_assert_not_last_active_admin", synchronize_before_count)
+
+    async def remove_admin(user_id: str, payload: dict[str, object]) -> str:
+        async with AsyncSessionLocal() as session:
+            try:
+                await users_api.update_user(UUID(user_id), UserUpdate(**payload), session, None)
+            except ConflictError as exc:
+                return exc.code
+            return "UPDATED"
+
+    try:
+        results = await asyncio.gather(
+            remove_admin(str(first_admin["id"]), {"is_active": False}),
+            remove_admin(str(second_admin["id"]), {"role": "subaccount"}),
+        )
+
+        assert sorted(results) == ["LAST_ADMIN_REQUIRED", "UPDATED"]
+        async with AsyncSessionLocal() as session:
+            active_admins = await session.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+            )
+        assert active_admins == 1
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(update(User).where(User.id == seed_admin_id).values(is_active=True))
+            await session.commit()

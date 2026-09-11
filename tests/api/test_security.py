@@ -36,6 +36,24 @@ async def test_admin_can_create_list_update_and_delete_global_ip_blacklist_entry
 
 
 @pytest.mark.asyncio
+async def test_explicit_null_blacklist_ip_is_a_noop(client, admin_token):
+    created = await client.post(
+        "/api/security/ip-blacklist",
+        headers=auth(admin_token),
+        json={"ip": f"198.51.100.{int(uuid.uuid4().hex[:2], 16) % 250 + 1}"},
+    )
+    assert created.status_code == 201, created.text
+
+    updated = await client.put(
+        f"/api/security/ip-blacklist/{created.json()['id']}",
+        headers=auth(admin_token),
+        json={"ip": None},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["ip"] == created.json()["ip"]
+
+
+@pytest.mark.asyncio
 async def test_global_blacklist_requires_admin_authenticates_and_normalizes_exact_ips(client, admin_token, operator_token):
     unauthenticated = await client.get("/api/security/ip-blacklist")
     assert unauthenticated.status_code == 401
@@ -50,6 +68,13 @@ async def test_global_blacklist_requires_admin_authenticates_and_normalizes_exac
     )
     assert invalid.status_code == 422
     assert invalid.json()["code"] == "VALIDATION_ERROR"
+
+    scoped_ipv6 = await client.post(
+        "/api/security/ip-blacklist", headers=auth(admin_token), json={"ip": "fe80::1%eth0"}
+    )
+    assert scoped_ipv6.status_code == 422
+    assert scoped_ipv6.json()["code"] == "VALIDATION_ERROR"
+    assert scoped_ipv6.json()["details"]
 
     first = await client.post(
         "/api/security/ip-blacklist", headers=auth(admin_token), json={"ip": "2001:0db8:0:0:0:0:0:9"}

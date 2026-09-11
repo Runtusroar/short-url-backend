@@ -40,6 +40,22 @@ async def test_admin_can_create_update_and_delete_domain(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_explicit_null_domain_name_is_a_noop(client, admin_token):
+    created = await client.post(
+        "/api/domains",
+        headers=auth(admin_token),
+        json={"name": f"{uuid.uuid4().hex[:16]}.nullable.test"},
+    )
+    assert created.status_code == 201, created.text
+
+    updated = await client.put(
+        f"/api/domains/{created.json()['id']}", headers=auth(admin_token), json={"name": None}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["name"] == created.json()["name"]
+
+
+@pytest.mark.asyncio
 async def test_domain_mutation_requires_admin_and_domain_validation_is_strict(
     client, operator_token, admin_token
 ):

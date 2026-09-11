@@ -4,7 +4,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def normalize_domain_name(value: str) -> str:
+def normalize_domain_name(value: str | None) -> str | None:
+    if value is None:
+        return None
     name = value.strip().lower().rstrip(".")
     if not name or any(character in name for character in ("://", "/", "?", "#", ":")):
         raise ValueError("域名不能包含协议、路径、查询参数或端口")

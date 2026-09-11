@@ -5,7 +5,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
-def normalize_ip_address(value: str) -> str:
+def normalize_ip_address(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if "%" in value:
+        raise ValueError("IP 地址不能包含作用域")
     try:
         return str(ipaddress.ip_address(value.strip()))
     except ValueError as exc:

@@ -119,6 +119,16 @@ async def update_user(
 ):
     await db.commit()
     async with db.begin():
+        # Every administrator-removal transaction locks the same active-admin
+        # set in the same order before it counts or changes a role. This
+        # serializes concurrent deactivations/demotions of different admins.
+        active_admins = await db.execute(
+            select(User)
+            .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+            .order_by(User.id)
+            .with_for_update()
+        )
+        active_admins.scalars().all()
         user = await db.scalar(select(User).where(User.id == user_id).with_for_update())
         if not user:
             raise NotFoundError("用户")
