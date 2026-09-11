@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.db.models import AccessResult, BlockReason
+
 
 class AccessLogResponse(BaseModel):
     id: UUID
@@ -16,8 +18,8 @@ class AccessLogResponse(BaseModel):
     short_code: str | None
     short_link_note: str | None
     target_url: str | None
-    result: str
-    block_reason: str | None
+    result: AccessResult
+    block_reason: BlockReason | None
     block_detail: str | None
     ip: str | None
     country_code: str | None

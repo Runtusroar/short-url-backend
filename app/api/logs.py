@@ -13,11 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import ErrorCode
 from app.database import get_db
-from app.db.models import AccessLevel, AccessLog, AccessResult, BlockReason, User
+from app.db.models import AccessLog, AccessResult, BlockReason, User
 from app.dependencies import get_current_user
 from app.exceptions import APIError
 from app.schemas.log import AccessLogCursorPage, AccessLogResponse
-from app.services.authorization import ensure_domain_access
+from app.services.authorization import ensure_authorized_read_domain
 from app.services.cursor import CursorError, decode_cursor, encode_cursor
 
 router = APIRouter(prefix="/api/access-logs", tags=["access-logs"])
@@ -35,7 +35,17 @@ def _time_boundary(value: str | None, *, end: bool) -> datetime | None:
     except ValueError as exc:
         raise APIError(ErrorCode.VALIDATION_ERROR, "时间范围格式不正确", 422) from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=ZoneInfo(settings.app_timezone))
+        zone = ZoneInfo(settings.app_timezone)
+        candidates = []
+        for fold in (0, 1):
+            candidate = parsed.replace(tzinfo=zone, fold=fold)
+            restored = candidate.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+            if restored == parsed:
+                candidates.append(candidate)
+        offsets = {candidate.utcoffset() for candidate in candidates}
+        if len(offsets) != 1:
+            raise APIError(ErrorCode.VALIDATION_ERROR, "歧义时间必须指定 UTC 偏移量", 422)
+        parsed = candidates[0]
     return parsed.astimezone(timezone.utc)
 
 
@@ -76,7 +86,7 @@ async def list_access_logs(
     keyword: str | None = Query(default=None, max_length=4000),
     date_from: str | None = None,
     date_to: str | None = None,
-    country: str | None = Query(default=None, min_length=2, max_length=2),
+    country: str | None = Query(default=None, pattern=r"^[A-Za-z]{2}$"),
     result: AccessResult | None = None,
     reason: BlockReason | None = None,
     cursor: str | None = None,
@@ -85,17 +95,25 @@ async def list_access_logs(
     current_user: User = Depends(get_current_user),
 ):
     # Authorization deliberately precedes every user-controlled filtering predicate.
-    await ensure_domain_access(db, current_user, domain_id, AccessLevel.READ)
+    await ensure_authorized_read_domain(db, current_user, domain_id)
     filters = [AccessLog.domain_id == domain_id]
     if short_link_id is not None:
         filters.append(AccessLog.short_link_id == short_link_id)
     if keyword and (term := keyword.strip()):
-        pattern = f"%{term}%"
-        filters.append(or_(AccessLog.short_code.ilike(pattern), AccessLog.short_link_note.ilike(pattern)))
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        filters.append(
+            or_(
+                AccessLog.short_code.ilike(pattern, escape="\\"),
+                AccessLog.short_link_note.ilike(pattern, escape="\\"),
+            )
+        )
     if (start := _time_boundary(date_from, end=False)) is not None:
         filters.append(AccessLog.accessed_at >= start)
     if (finish := _time_boundary(date_to, end=True)) is not None:
         filters.append(AccessLog.accessed_at <= finish)
+    if start is not None and finish is not None and start > finish:
+        raise APIError(ErrorCode.VALIDATION_ERROR, "开始时间不能晚于结束时间", 422)
     if country:
         filters.append(AccessLog.country_code == country.upper())
     if result is not None:

@@ -43,3 +43,18 @@ def authorized_domain_ids_query(user: User) -> Select:
             Domain.is_active.is_(True),
         )
     )
+
+
+async def ensure_authorized_read_domain(db, user: User, domain_id) -> Domain:
+    """Resolve a readable domain without exposing domain existence to subaccounts."""
+    if user.role == UserRole.ADMIN:
+        return await ensure_domain_access(db, user, domain_id, AccessLevel.READ)
+    domain = await db.scalar(
+        select(Domain).where(
+            Domain.id == domain_id,
+            Domain.id.in_(authorized_domain_ids_query(user)),
+        )
+    )
+    if domain is None:
+        raise PermissionDeniedError("无权访问该域名")
+    return domain

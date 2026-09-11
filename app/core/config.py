@@ -1,5 +1,6 @@
 from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class Settings(BaseSettings):
@@ -25,6 +26,15 @@ class Settings(BaseSettings):
         """Treat Compose's empty optional MaxMind substitutions as absent."""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("app_timezone")
+    @classmethod
+    def validate_app_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (TypeError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("必须是有效的 IANA 时区") from exc
         return value
 
 

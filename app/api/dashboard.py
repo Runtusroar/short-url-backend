@@ -7,13 +7,13 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import distinct, func, select
+from sqlalchemy import String, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import ErrorCode
 from app.database import get_db
-from app.db.models import AccessLevel, AccessLog, User
+from app.db.models import AccessLog, User
 from app.dependencies import get_current_user
 from app.exceptions import APIError
 from app.schemas.dashboard import (
@@ -22,7 +22,7 @@ from app.schemas.dashboard import (
     DashboardTopLink,
     DashboardTopReferer,
 )
-from app.services.authorization import ensure_domain_access
+from app.services.authorization import ensure_authorized_read_domain
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -46,7 +46,7 @@ async def dashboard(
     if days not in {7, 30}:
         raise APIError(ErrorCode.VALIDATION_ERROR, "days 仅支持 7 或 30", 422)
     # Resolve the requested domain before executing any aggregate query.
-    await ensure_domain_access(db, current_user, domain_id, AccessLevel.READ)
+    await ensure_authorized_read_domain(db, current_user, domain_id)
     first_day, start, end = _range(days)
     filters = (AccessLog.domain_id == domain_id, AccessLog.accessed_at >= start, AccessLog.accessed_at < end)
     totals = (
@@ -88,14 +88,48 @@ async def dashboard(
             )
         )
 
+    identity = func.coalesce(
+        cast(AccessLog.short_link_id, String),
+        AccessLog.short_code,
+        cast(AccessLog.id, String),
+    ).label("identity")
     count = func.count(AccessLog.id).label("total")
+    top_identities = (
+        select(identity, count)
+        .where(*filters)
+        .group_by(identity)
+        .order_by(count.desc(), identity.asc())
+        .limit(5)
+        .subquery()
+    )
+    ranked_snapshots = (
+        select(
+            identity,
+            AccessLog.short_code,
+            AccessLog.short_link_note,
+            func.row_number()
+            .over(
+                partition_by=identity,
+                order_by=(AccessLog.accessed_at.desc(), AccessLog.id.desc()),
+            )
+            .label("snapshot_rank"),
+        )
+        .where(*filters)
+        .subquery()
+    )
     top_link_rows = (
         await db.execute(
-            select(AccessLog.short_code, AccessLog.short_link_note, count)
-            .where(*filters)
-            .group_by(AccessLog.short_code, AccessLog.short_link_note)
-            .order_by(count.desc(), AccessLog.short_code.asc())
-            .limit(5)
+            select(
+                ranked_snapshots.c.short_code,
+                ranked_snapshots.c.short_link_note,
+                top_identities.c.total,
+            )
+            .join(
+                ranked_snapshots,
+                (ranked_snapshots.c.identity == top_identities.c.identity)
+                & (ranked_snapshots.c.snapshot_rank == 1),
+            )
+            .order_by(top_identities.c.total.desc(), top_identities.c.identity.asc())
         )
     ).all()
     top_referer_rows = (
