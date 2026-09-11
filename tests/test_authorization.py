@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import AccessLevel, Domain, User, UserDomainAccess
-from app.exceptions import PermissionDeniedError
+from app.exceptions import NotFoundError, PermissionDeniedError
 from app.services.authorization import (
     authorized_domain_ids_query,
     ensure_domain_access,
@@ -34,14 +34,17 @@ async def test_domain_access_matrix(db, make_user, make_domain, role, granted, r
             await ensure_domain_access(db, user, domain.id, AccessLevel(required))
 
 
-async def test_authorized_domain_ids_query_limits_subaccounts_to_active_grants(db, domain_a, domain_b):
-    reader = await db.scalar(select(User).where(User.username == "reader"))
-    domain_b.is_active = False
+async def test_inactive_grant_is_excluded_and_rejected(db, make_user, make_domain):
+    reader = await make_user(role="subaccount")
+    domain = await make_domain(is_active=False)
+    db.add(UserDomainAccess(user_id=reader.id, domain_id=domain.id, access_level="manage"))
     await db.flush()
 
     domain_ids = set((await db.scalars(authorized_domain_ids_query(reader))).all())
 
-    assert domain_ids == {domain_a.id}
+    assert domain.id not in domain_ids
+    with pytest.raises(NotFoundError):
+        await ensure_domain_access(db, reader, domain.id, AccessLevel.READ)
 
 
 async def test_authorized_domain_ids_query_includes_all_active_domains_for_admin(db, domain_a, domain_b):

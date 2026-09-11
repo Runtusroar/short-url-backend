@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token, oauth2_scheme
-from app.database import get_db
+from app.database import get_db as _get_db
 from app.db.models import User, UserRole
 from app.exceptions import PermissionDeniedError
 
@@ -22,7 +22,7 @@ def _extract_token(request: Request, header_token: str | None) -> str | None:
 async def get_current_user(
     request: Request,
     header_token: str | None = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(_get_db),
 ) -> User:
     token = _extract_token(request, header_token)
     if not token:
@@ -43,21 +43,10 @@ async def get_current_user(
     return user
 
 
-def require_role(*roles: str):
-    def checker(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in roles:
-            raise PermissionDeniedError("权限不足")
-        return current_user
-
-    return checker
-
-
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != UserRole.ADMIN:
         raise PermissionDeniedError("需要管理员权限")
     return current_user
 
 
-require_staff = require_role("admin", "operator")
-
-__all__ = ["get_db", "get_current_user", "require_role", "require_admin", "require_staff"]
+__all__ = ["get_current_user", "require_admin"]
