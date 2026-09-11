@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy import select
 
+from app.core.errors import NotFoundError, PermissionDeniedError
 from app.db.models import AccessLevel, Domain, User, UserDomainAccess
-from app.exceptions import NotFoundError, PermissionDeniedError
 from app.services.authorization import (
     authorized_domain_ids_query,
     ensure_domain_access,

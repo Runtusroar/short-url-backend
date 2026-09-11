@@ -16,10 +16,19 @@ async def test_authenticated_domain_listing_is_active_and_scoped(client, admin_t
     assert admin.status_code == 200, admin.text
     assert {item["name"] for item in admin.json()["items"]} >= {"test.local", "second.test.local"}
 
+    ungranted = await client.post(
+        "/api/domains",
+        headers=auth(admin_token),
+        json={"name": f"{uuid.uuid4().hex[:16]}.ungranted.test"},
+    )
+    assert ungranted.status_code == 201, ungranted.text
+
     reader = await client.get("/api/domains", headers=auth(read_token))
     assert reader.status_code == 200, reader.text
-    assert [item["id"] for item in reader.json()["items"]] == [str(domain_a.id)]
-    assert reader.json()["items"][0]["is_active"] is True
+    listed_ids = {item["id"] for item in reader.json()["items"]}
+    assert str(domain_a.id) in listed_ids
+    assert ungranted.json()["id"] not in listed_ids
+    assert all(item["is_active"] is True for item in reader.json()["items"])
 
 
 @pytest.mark.asyncio

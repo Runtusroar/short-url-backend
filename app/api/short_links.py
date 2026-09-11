@@ -6,11 +6,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import ErrorCode
+from app.core.errors import ConflictError, ErrorCode, NotFoundError
 from app.database import get_db
 from app.db.models import AccessLevel, LinkPolicy, ShortLink, TargetUrl, User
 from app.dependencies import get_current_user
-from app.exceptions import ConflictError, NotFoundError
 from app.schemas.common import Page
 from app.schemas.short_link import (
     DestinationResponse,
@@ -24,6 +23,12 @@ from app.services.short_code import create_unique_short_code
 
 
 router = APIRouter(prefix="/api/short-links", tags=["short-links"])
+
+
+def _is_short_code_unique_violation(exc: IntegrityError) -> bool:
+    """Only the database's named domain/code constraint is a public alias conflict."""
+    diagnostic = getattr(getattr(exc, "orig", None), "diag", None)
+    return getattr(diagnostic, "constraint_name", None) == "uq_domain_short_code"
 
 
 def _visible_links(user: User):
@@ -229,7 +234,9 @@ async def create_short_link(
             await db.flush()
         return _response(await _load_link(db, link.id, current_user))
     except IntegrityError as exc:
-        raise ConflictError("该短码在当前域名下已存在", ErrorCode.SHORT_CODE_CONFLICT) from exc
+        if _is_short_code_unique_violation(exc):
+            raise ConflictError("该短码在当前域名下已存在", ErrorCode.SHORT_CODE_CONFLICT) from exc
+        raise
 
 
 @router.put("/{link_id}", response_model=ShortLinkResponse)
@@ -260,7 +267,9 @@ async def update_short_link(
             await db.flush()
         return _response(await _load_link(db, link_id, current_user))
     except IntegrityError as exc:
-        raise ConflictError("该短码在当前域名下已存在", ErrorCode.SHORT_CODE_CONFLICT) from exc
+        if _is_short_code_unique_violation(exc):
+            raise ConflictError("该短码在当前域名下已存在", ErrorCode.SHORT_CODE_CONFLICT) from exc
+        raise
 
 
 @router.delete("/{link_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,11 +1,11 @@
 import pytest
 
 import app.dependencies as dependencies
-from app.auth import create_access_token, decode_token, get_password_hash, verify_password
 from app.core.config import settings
+from app.core.errors import PermissionDeniedError
+from app.core.security import create_access_token, decode_token, get_password_hash, verify_password
 from app.db.models import User
 from app.dependencies import require_admin
-from app.exceptions import PermissionDeniedError
 
 
 def test_password_hash():
@@ -50,9 +50,9 @@ async def test_login_cookie_uses_configured_security_attributes(client, monkeypa
 
 
 def test_final_dependencies_do_not_expose_legacy_role_helpers():
-    assert dependencies.__all__ == ["get_current_user", "require_admin"]
     assert not hasattr(dependencies, "require_role")
     assert not hasattr(dependencies, "require_staff")
+    assert {"client_ip_identifier", "rate_limit", "user_identifier"} <= set(dependencies.__all__)
 
 
 def test_require_admin_rejects_obsolete_operator_role():

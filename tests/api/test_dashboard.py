@@ -83,6 +83,28 @@ async def test_dashboard_groups_note_history_by_stable_link_and_uses_stable_ties
     assert response.json()["top_links"][:2] == expected
 
 
+async def test_dashboard_applies_a_stable_top_link_cutoff_to_orphaned_snapshots(client, read_token):
+    """Deleted links retain null IDs, so tied historical snapshots still need deterministic ranking."""
+    domain = await _authorized_domain()
+    now = datetime.now(timezone.utc)
+    codes = ["kilo", "alpha", "delta", "bravo", "hotel", "echo"]
+    for short_code in codes:
+        await _log(
+            domain.id,
+            accessed_at=now,
+            short_code=short_code,
+            short_link_id=None,
+            note=f"{short_code} snapshot",
+        )
+
+    response = await client.get(
+        "/api/dashboard", headers=_auth(read_token), params={"domain_id": str(domain.id), "days": 7}
+    )
+
+    assert response.status_code == 200, response.text
+    assert [row["short_code"] for row in response.json()["top_links"]] == sorted(codes)[:5]
+
+
 async def test_dashboard_uses_a_constant_number_of_real_sql_statements_and_does_not_aggregate_denied_domains(
     client, read_token
 ):
@@ -123,4 +145,4 @@ async def test_dashboard_uses_a_constant_number_of_real_sql_statements_and_does_
         event.remove(engine.sync_engine, "before_cursor_execute", record_denied)
 
     assert denied.status_code == 403
-    assert not any("count(" in statement.lower() for statement in denied_statements)
+    assert not any("access_logs" in statement.lower() for statement in denied_statements)

@@ -5,11 +5,10 @@ from sqlalchemy import cast, func, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ErrorCode
+from app.core.errors import ConflictError, ErrorCode, NotFoundError
 from app.database import get_db
 from app.db.models import IpBlacklist, User
 from app.dependencies import require_admin
-from app.exceptions import ConflictError, NotFoundError
 from app.schemas.common import Page
 from app.schemas.security import IpBlacklistCreate, IpBlacklistResponse, IpBlacklistUpdate
 

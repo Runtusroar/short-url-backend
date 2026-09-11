@@ -11,11 +11,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.errors import ErrorCode
+from app.core.errors import APIError, ErrorCode
 from app.database import get_db
 from app.db.models import AccessLog, AccessResult, BlockReason, User
 from app.dependencies import get_current_user
-from app.exceptions import APIError
 from app.schemas.log import AccessLogCursorPage, AccessLogResponse
 from app.services.authorization import ensure_authorized_read_domain
 from app.services.cursor import CursorError, decode_cursor, encode_cursor

@@ -4,12 +4,11 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ErrorCode
+from app.core.errors import ConflictError, ErrorCode, NotFoundError
 from app.core.security import get_password_hash
 from app.database import get_db
 from app.db.models import Domain, User, UserDomainAccess, UserRole
 from app.dependencies import require_admin
-from app.exceptions import ConflictError, NotFoundError
 from app.schemas.common import Page
 from app.schemas.user import DomainGrantResponse, UserCreate, UserResponse, UserUpdate
 
@@ -29,7 +28,27 @@ async def _grants_for_user(db: AsyncSession, user_id: UUID) -> list[DomainGrantR
     ]
 
 
-async def _user_response(db: AsyncSession, user: User) -> UserResponse:
+async def _grants_for_users(
+    db: AsyncSession, user_ids: list[UUID]
+) -> dict[UUID, list[DomainGrantResponse]]:
+    grants_by_user = {user_id: [] for user_id in user_ids}
+    if not user_ids:
+        return grants_by_user
+    result = await db.execute(
+        select(UserDomainAccess)
+        .where(UserDomainAccess.user_id.in_(user_ids))
+        .order_by(UserDomainAccess.user_id, UserDomainAccess.domain_id)
+    )
+    for grant in result.scalars():
+        grants_by_user[grant.user_id].append(
+            DomainGrantResponse(domain_id=grant.domain_id, access_level=grant.access_level)
+        )
+    return grants_by_user
+
+
+async def _user_response(
+    db: AsyncSession, user: User, *, domain_access: list[DomainGrantResponse] | None = None
+) -> UserResponse:
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -37,7 +56,7 @@ async def _user_response(db: AsyncSession, user: User) -> UserResponse:
         is_active=user.is_active,
         created_at=user.created_at,
         updated_at=user.updated_at,
-        domain_access=await _grants_for_user(db, user.id),
+        domain_access=domain_access if domain_access is not None else await _grants_for_user(db, user.id),
     )
 
 
@@ -75,7 +94,16 @@ async def list_users(
         select(User).order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     )
     users = result.scalars().all()
-    return Page(items=[await _user_response(db, user) for user in users], page=page, page_size=page_size, total=total)
+    grants_by_user = await _grants_for_users(db, [user.id for user in users])
+    return Page(
+        items=[
+            await _user_response(db, user, domain_access=grants_by_user[user.id])
+            for user in users
+        ],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

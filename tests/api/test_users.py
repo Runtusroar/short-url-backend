@@ -3,12 +3,12 @@ import uuid
 from uuid import UUID
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import event, func, select, update
 
 from app.api import users as users_api
-from app.db import AsyncSessionLocal
+from app.core.errors import ConflictError
+from app.db import AsyncSessionLocal, engine
 from app.db.models import User, UserRole
-from app.exceptions import ConflictError
 from app.schemas.user import UserUpdate
 
 
@@ -179,7 +179,27 @@ async def test_cannot_deactivate_the_last_active_administrator(client, admin_tok
 
 
 @pytest.mark.asyncio
-async def test_concurrent_admin_removals_leave_one_active_administrator(client, admin_token, monkeypatch):
+async def test_list_users_loads_all_domain_grants_in_one_query(client, admin_token):
+    """Looking up grants per returned user would make page cost grow with page size."""
+    grant_queries: list[str] = []
+
+    def record(_, __, statement, ___, ____, _____):
+        if "user_domain_access" in statement.lower():
+            grant_queries.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        response = await client.get("/api/users?page=1&page_size=20", headers=auth(admin_token))
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) > 1
+    assert len(grant_queries) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_admin_removals_leave_one_active_administrator(client, admin_token):
     async def create_admin() -> dict[str, object]:
         response = await client.post(
             "/api/users",
@@ -203,20 +223,13 @@ async def test_concurrent_admin_removals_leave_one_active_administrator(client, 
         await session.commit()
 
     barrier = asyncio.Barrier(2)
-    original_assert = users_api._assert_not_last_active_admin
-
-    async def synchronize_before_count(db, user, payload):
-        try:
-            await asyncio.wait_for(barrier.wait(), timeout=0.25)
-        except TimeoutError:
-            pass
-        return await original_assert(db, user, payload)
-
-    monkeypatch.setattr(users_api, "_assert_not_last_active_admin", synchronize_before_count)
 
     async def remove_admin(user_id: str, payload: dict[str, object]) -> str:
         async with AsyncSessionLocal() as session:
             try:
+                # Synchronize callers before either transaction acquires the row locks;
+                # a generous timeout only protects the test process from a stalled task.
+                await asyncio.wait_for(barrier.wait(), timeout=5)
                 await users_api.update_user(UUID(user_id), UserUpdate(**payload), session, None)
             except ConflictError as exc:
                 return exc.code

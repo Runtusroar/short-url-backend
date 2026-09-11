@@ -1,7 +1,11 @@
 import asyncio
 import uuid
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
+
+from app.api import short_links as short_links_api
 
 
 def auth(token: str) -> dict[str, str]:
@@ -371,6 +375,31 @@ async def test_alias_conflicts_are_stable_and_case_sensitive(client, operator_to
         json=aggregate_payload(str(domain_a.id), custom_alias="caseconflicta"),
     )
     assert differently_cased.status_code == 201, differently_cased.text
+
+
+@pytest.mark.asyncio
+async def test_non_short_code_integrity_error_is_not_reported_as_a_short_code_conflict(
+    client, operator_token, domain_a, monkeypatch
+):
+    """Only uq_domain_short_code may become the public short-code conflict envelope."""
+
+    async def fail_with_an_unrelated_constraint(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT INTO target_urls",
+            {},
+            SimpleNamespace(diag=SimpleNamespace(constraint_name="target_urls_url_key")),
+        )
+
+    monkeypatch.setattr(short_links_api, "_replace_destinations", fail_with_an_unrelated_constraint)
+
+    response = await client.post(
+        "/api/short-links",
+        headers=auth(operator_token),
+        json=aggregate_payload(str(domain_a.id), custom_alias="OtherIntegrityA"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONFLICT"
 
 
 @pytest.mark.asyncio

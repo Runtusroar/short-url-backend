@@ -4,14 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import PermissionDeniedError, UnauthorizedError
 from app.core.security import create_access_token, verify_password
 from app.database import get_db
 from app.db.models import User
-from app.dependencies import get_current_user
-from app.exceptions import PermissionDeniedError, UnauthorizedError
-from app.rate_limit import rate_limit
-from app.schemas import UserResponse
+from app.dependencies import get_current_user, rate_limit
 from app.schemas.auth import Token
+from app.schemas.user import UserResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 

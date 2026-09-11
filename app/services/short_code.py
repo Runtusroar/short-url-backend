@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ShortLink
+from app.db.models import ShortLink
 
 CHARSET = string.ascii_lowercase + string.digits
 CODE_LENGTH = 6
@@ -20,7 +20,7 @@ def generate_short_code(length: int = CODE_LENGTH) -> str:
 
 
 def validate_custom_alias(alias: str) -> bool:
-    if not CUSTOM_ALIAS_RE.match(alias):
+    if CUSTOM_ALIAS_RE.fullmatch(alias) is None:
         return False
     if alias.lower() in RESERVED_PREFIXES:
         return False

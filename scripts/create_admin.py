@@ -6,9 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
 
-from app.auth import get_password_hash
 from app.database import AsyncSessionLocal
-from app.models import User
+from app.core.security import get_password_hash
+from app.db.models import User
 
 
 async def main():

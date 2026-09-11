@@ -23,3 +23,8 @@ def test_validate_custom_alias_too_short():
 def test_validate_custom_alias_reserved():
     assert validate_custom_alias("api") is False
     assert validate_custom_alias("API") is False
+
+
+def test_validate_custom_alias_rejects_a_trailing_newline():
+    """A partial regex match would persist an alias that cannot safely be routed."""
+    assert validate_custom_alias("campaign-a\n") is False

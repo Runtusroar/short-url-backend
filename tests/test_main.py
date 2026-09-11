@@ -1,7 +1,10 @@
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.core.errors import register_exception_handlers
 from app.main import app, lifespan
 
 
@@ -21,6 +24,31 @@ def test_blank_maxmind_settings_are_none(monkeypatch):
 
     assert configured.maxmind_account_id is None
     assert configured.maxmind_license_key is None
+
+
+def test_blank_non_maxmind_numeric_setting_is_not_silently_converted_to_none(monkeypatch):
+    """The blank-credential normalizer must not weaken unrelated numeric validation."""
+    monkeypatch.setenv("IP_REPUTATION_TTL_HOURS", "")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_unhandled_exception_logs_a_traceback_but_keeps_the_stable_error_envelope(caplog):
+    """Diagnostics may contain the failure, while clients must receive no implementation detail."""
+    isolated = FastAPI()
+    register_exception_handlers(isolated)
+
+    @isolated.get("/boom")
+    async def boom():
+        raise RuntimeError("test-only failure")
+
+    with TestClient(isolated, raise_server_exceptions=False) as client:
+        response = client.get("/boom")
+
+    assert response.status_code == 500
+    assert response.json() == {"code": "INTERNAL_ERROR", "message": "服务器内部错误", "details": None}
+    assert any(record.exc_info for record in caplog.records)
 
 
 @pytest.mark.asyncio

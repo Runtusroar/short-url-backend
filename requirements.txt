@@ -19,8 +19,12 @@ anyio==4.14.2
     #   httpx
     #   starlette
     #   watchfiles
-async-timeout==5.0.1 ; python_full_version < '3.11.3'
-    # via redis
+async-timeout==5.0.1
+    # via
+    #   asyncpg
+    #   redis
+asyncpg==0.29.0
+    # via short-url
 attrs==26.1.0
     # via aiohttp
 bcrypt==5.0.0

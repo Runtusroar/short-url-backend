@@ -16,9 +16,8 @@ from app.api import (
     users,
 )
 from app.core.config import settings
-from app.exceptions import register_exception_handlers
-from app.rate_limit import rate_limit, user_identifier
-from app.routers import logs
+from app.core.errors import register_exception_handlers
+from app.dependencies import client_ip_identifier, rate_limit, user_identifier
 from app.services.proxy import close_proxy_provider
 
 
@@ -50,7 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ip_rate_limit = rate_limit(times=60, seconds=60)
+ip_rate_limit = rate_limit(times=60, seconds=60, identifier=client_ip_identifier)
 user_rate_limit = rate_limit(times=120, seconds=60, identifier=user_identifier)
 
 app.include_router(auth.router)
@@ -60,7 +59,6 @@ app.include_router(security.router, dependencies=[user_rate_limit])
 app.include_router(short_links.router, dependencies=[user_rate_limit])
 app.include_router(dashboard.router, dependencies=[user_rate_limit])
 app.include_router(access_logs.router, dependencies=[user_rate_limit])
-app.include_router(logs.router, dependencies=[user_rate_limit])
 
 
 @app.get("/health")

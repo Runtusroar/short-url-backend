@@ -86,6 +86,27 @@ async def test_returns_cached_positive_and_negative_reputation(db, is_proxy, pro
     assert provider.calls == []
 
 
+async def test_fresh_non_proxy_result_is_reused_without_a_second_provider_call():
+    """A freshly persisted clean result must become a cache hit just like a proxy result."""
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    ip = "203.0.113.212"
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await db.commit()
+        first_provider = Provider(response={"is_proxy": False, "proxy_type": None})
+
+        fresh = await get_proxy_result(db, ip, first_provider, now)
+        second_provider = Provider(response={"is_proxy": True, "proxy_type": "must-not-run"})
+        cached = await get_proxy_result(db, ip, second_provider, now)
+
+        assert (fresh.is_proxy, fresh.proxy_type, fresh.source) == (False, None, "maxmind")
+        assert (cached.is_proxy, cached.proxy_type, cached.source) == (False, None, "cache")
+        assert first_provider.calls == [(ip, 1.5)]
+        assert second_provider.calls == []
+        await db.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await db.commit()
+
+
 async def test_expired_reputation_refreshes_from_provider_and_is_persisted():
     """Changing expiry handling to reuse stale results must fail this test."""
     now = datetime(2026, 9, 12, tzinfo=timezone.utc)

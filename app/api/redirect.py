@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.db import AsyncSessionLocal
 from app.db.models import AccessResult, Domain, IpBlacklist, ShortLink
-from app.exceptions import NotFoundError
+from app.core.errors import NotFoundError
 from app.services.access import AccessContext, decide_access, target_error_decision
 from app.services.access_log import AccessLogSnapshot, write_access_log
 from app.services.redirect import choose_target
@@ -82,7 +82,7 @@ def _snapshot(
     )
 
 
-@router.api_route("/{short_code}", methods=["GET", "HEAD"])
+@router.get("/{short_code}")
 async def redirect(short_code: str, request: Request, db: AsyncSession = Depends(get_db)) -> Response:
     metadata = extract_request_metadata(request)
     domain = await _resolve_domain(db, request)
@@ -124,3 +124,8 @@ async def redirect(short_code: str, request: Request, db: AsyncSession = Depends
     if target is None:
         raise NotFoundError("目标 URL")
     return Response(content=b"", status_code=302, headers={"Location": target.url})
+
+
+@router.head("/{short_code}", include_in_schema=False)
+async def redirect_head(short_code: str, request: Request, db: AsyncSession = Depends(get_db)) -> Response:
+    return await redirect(short_code, request, db)

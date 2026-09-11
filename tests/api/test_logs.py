@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db import AsyncSessionLocal
 from app.db.models import AccessLog, Domain, ShortLink, User, UserDomainAccess
+from app.main import app
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -280,3 +281,25 @@ async def test_access_logs_reject_dst_gaps_folds_and_reversed_local_ranges(clien
         },
     )
     assert explicit_offset.status_code == 200
+
+
+def test_access_log_openapi_exposes_the_closed_result_and_reason_enums():
+    """Clients need the same finite filter/output values the persisted API contract emits."""
+    schemas = app.openapi()["components"]["schemas"]
+
+    assert schemas["AccessResult"]["enum"] == ["allowed", "blocked", "error"]
+    assert schemas["BlockReason"]["enum"] == [
+        "ip",
+        "proxy",
+        "country",
+        "bot",
+        "platform",
+        "referer",
+        "other",
+    ]
+    response_properties = schemas["AccessLogResponse"]["properties"]
+    assert response_properties["result"] == {"$ref": "#/components/schemas/AccessResult"}
+    assert response_properties["block_reason"]["anyOf"] == [
+        {"$ref": "#/components/schemas/BlockReason"},
+        {"type": "null"},
+    ]

@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
-from app.config import settings
+from app.core.config import settings
 from scripts.backfill_user_agents import backfill_user_agents
 
 
@@ -295,6 +295,9 @@ async def test_user_agent_backfill_marks_processed_rows_and_is_idempotent():
     engine = create_engine(settings.database_url.replace("+asyncpg", "+psycopg"))
     log_id = uuid.uuid4()
     try:
+        # Other API tests may have produced unprocessed audit rows. Drain that
+        # shared queue before asserting this fixture's one-row batch behavior.
+        await backfill_user_agents(1000)
         with engine.begin() as connection:
             connection.execute(
                 text(

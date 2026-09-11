@@ -1,8 +1,8 @@
 from sqlalchemy import select
 from sqlalchemy.sql import Select
 
+from app.core.errors import NotFoundError, PermissionDeniedError
 from app.db.models import AccessLevel, Domain, User, UserDomainAccess, UserRole
-from app.exceptions import NotFoundError, PermissionDeniedError
 
 
 async def ensure_domain_access(
