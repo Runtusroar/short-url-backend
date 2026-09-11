@@ -5,11 +5,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_limiter import FastAPILimiter
 
-from app.api import auth, domains as domain_api, security, users
+from app.api import auth, domains as domain_api, security, short_links, users
 from app.core.config import settings
 from app.exceptions import register_exception_handlers
 from app.rate_limit import rate_limit, user_identifier
-from app.routers import logs, redirect, short_links
+from app.routers import logs, redirect
 
 
 @asynccontextmanager

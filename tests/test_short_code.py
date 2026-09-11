@@ -9,6 +9,7 @@ def test_generate_short_code_length():
 def test_generate_short_code_charset():
     code = generate_short_code()
     assert code.isalnum()
+    assert code == code.lower()
 
 
 def test_validate_custom_alias_ok():
