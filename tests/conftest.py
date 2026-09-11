@@ -51,14 +51,14 @@ def setup_database():
 
     with _sync_engine.connect() as conn:
         _insert_user(conn, admin_id, "admin", "admin123", "admin")
-        _insert_user(conn, operator_id, "operator", "operator123", "operator")
-        _insert_user(conn, client_id, "client", "client123", "client")
+        _insert_user(conn, operator_id, "operator", "operator123", "subaccount")
+        _insert_user(conn, client_id, "client", "client123", "subaccount")
 
         conn.execute(
             text(
                 """
-                INSERT INTO domains (id, name, is_active, is_default, created_at)
-                VALUES (:id, 'test.local', true, true, now())
+                INSERT INTO domains (id, name, is_active, created_at)
+                VALUES (:id, 'test.local', true, now())
                 """
             ),
             {"id": str(domain_id)},
@@ -68,12 +68,11 @@ def setup_database():
             conn.execute(
                 text(
                     """
-                    INSERT INTO user_domains (id, user_id, domain_id, created_at)
-                    VALUES (:id, :user_id, :domain_id, now())
+                    INSERT INTO user_domain_access (user_id, domain_id, access_level, created_at)
+                    VALUES (:user_id, :domain_id, 'manage', now())
                     """
                 ),
                 {
-                    "id": str(uuid.uuid4()),
                     "user_id": str(user_id),
                     "domain_id": str(domain_id),
                 },
@@ -126,6 +125,5 @@ async def default_domain(client, admin_token):
     )
     assert resp.status_code == 200
     domains = resp.json()
-    default = [d for d in domains if d["is_default"]]
-    assert default, "default domain not found"
-    return default[0]
+    assert domains, "test domain not found"
+    return domains[0]

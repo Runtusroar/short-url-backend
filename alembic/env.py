@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 from app.config import settings
-from app.database import Base
-from app.models import *  # noqa: F401, F403
+from app.db.base import Base
+from app.db.models import *  # noqa: F401, F403
 
 config = context.config
 if config.config_file_name is not None:
@@ -22,7 +22,9 @@ def get_url():
     return settings.database_url
 
 
-config.set_main_option("sqlalchemy.url", get_url())
+# ConfigParser treats percent as interpolation syntax; URLs frequently contain
+# percent-encoded query options (such as a migration test schema search path).
+config.set_main_option("sqlalchemy.url", get_url().replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

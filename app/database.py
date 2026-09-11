@@ -1,16 +1,5 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
+"""Temporary compatibility exports for callers migrated in later tasks."""
 
-from app.config import settings
+from app.db import AsyncSessionLocal, Base, engine, get_db
 
-engine = create_async_engine(settings.database_url, future=True, echo=False)
-AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-Base = declarative_base()
-
-
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+__all__ = ["AsyncSessionLocal", "Base", "engine", "get_db"]

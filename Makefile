@@ -1,4 +1,4 @@
-.PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update
+.PHONY: up down build rebuild restart logs test test-unit test-integration migrate makemigrations create-admin create-domain init bash geoip-update migration-check backfill-user-agents
 
 # Auto-detect docker compose command (modern Docker uses "docker compose", older versions use "docker-compose")
 DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo 'docker compose'; else echo 'docker-compose'; fi)
@@ -58,3 +58,9 @@ geoip-update:
 		-e HTTP_PROXY=$(HTTP_PROXY) \
 		-e HTTPS_PROXY=$(HTTPS_PROXY) \
 		geoipupdate
+
+migration-check:
+	$(DOCKER_COMPOSE) exec app python scripts/check_policy_migration.py
+
+backfill-user-agents:
+	$(DOCKER_COMPOSE) exec app python scripts/backfill_user_agents.py --batch-size 500
