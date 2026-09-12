@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import Settings
 from app.core.errors import register_exception_handlers
 from app.main import app, lifespan
+from app.services.public_short_url import build_public_short_url
 
 
 def test_blank_maxmind_settings_are_none(monkeypatch):
@@ -92,6 +93,18 @@ def test_public_short_url_scheme_defaults_to_http_and_production_requires_https(
         _env_file=None,
     )
     assert production.public_short_url_scheme == "https"
+
+
+def test_public_short_url_supports_an_optional_development_port():
+    """A local URL must remain reachable when Docker publishes a non-default host port."""
+    assert (
+        build_public_short_url("localhost", "abc123", scheme="http", port=18000)
+        == "http://localhost:18000/abc123"
+    )
+    assert (
+        build_public_short_url("go.example.com", "abc123", scheme="https", port=None)
+        == "https://go.example.com/abc123"
+    )
 
 
 def test_http_error_envelope_preserves_protocol_headers():

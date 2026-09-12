@@ -1,4 +1,4 @@
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24
     cookie_secure: bool = False
     public_short_url_scheme: str = "http"
+    public_short_url_port: int | None = Field(default=None, ge=1, le=65535)
 
     @field_validator("app_env")
     @classmethod
@@ -45,10 +46,15 @@ class Settings(BaseSettings):
             raise ValueError("PUBLIC_SHORT_URL_SCHEME 必须是 http 或 https")
         return scheme
 
-    @field_validator("maxmind_account_id", "maxmind_license_key", mode="before")
+    @field_validator(
+        "maxmind_account_id",
+        "maxmind_license_key",
+        "public_short_url_port",
+        mode="before",
+    )
     @classmethod
-    def empty_maxmind_credentials_are_none(cls, value: object) -> object:
-        """Treat Compose's empty optional MaxMind substitutions as absent."""
+    def empty_optional_settings_are_none(cls, value: object) -> object:
+        """Treat empty optional environment substitutions as absent."""
         if isinstance(value, str) and not value.strip():
             return None
         return value

@@ -652,7 +652,7 @@ async def test_short_link_listing_filters_and_paginates(client, admin_token, dom
 
 @pytest.mark.asyncio
 async def test_short_link_list_returns_table_summaries_in_a_constant_number_of_queries(
-    client, admin_token, domain_a
+    client, admin_token, domain_a, monkeypatch
 ):
     """Adding page rows must not add destination, policy, or visit-count database round trips."""
     created = await client.post(
@@ -686,7 +686,13 @@ async def test_short_link_list_returns_table_summaries_in_a_constant_number_of_q
 
     assert response.status_code == 200, response.text
     item = next(item for item in response.json()["items"] if item["id"] == link_id)
-    assert item["short_url"] == "http://test.local/TableSummaryA"
+    monkeypatch.setattr("app.api.short_links.settings.public_short_url_port", 18000)
+    response = await client.get(
+        f"/api/short-links?domain_id={domain_a.id}", headers=auth(admin_token)
+    )
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json()["items"] if item["id"] == link_id)
+    assert item["short_url"] == "http://test.local:18000/TableSummaryA"
     assert item["destination_summary"] == {
         "allowed_urls": ["https://example.com/ok"],
         "blocked_urls": ["https://example.com/blocked"],

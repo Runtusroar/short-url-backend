@@ -23,6 +23,7 @@ from app.schemas.short_link import (
     ShortLinkWrite,
 )
 from app.services.authorization import authorized_domain_ids_query, ensure_domain_access
+from app.services.public_short_url import build_public_short_url
 from app.services.short_code import create_unique_short_code
 
 
@@ -113,7 +114,12 @@ def _list_item(row) -> ShortLinkListItem:
         is_active=row.is_active,
         created_at=row.created_at,
         updated_at=row.updated_at,
-        short_url=f"{settings.public_short_url_scheme}://{row.domain_name}/{row.short_code}",
+        short_url=build_public_short_url(
+            row.domain_name,
+            row.short_code,
+            scheme=settings.public_short_url_scheme,
+            port=settings.public_short_url_port,
+        ),
         destination_summary=DestinationSummary(
             allowed_urls=row.allowed_urls,
             blocked_urls=row.blocked_urls,
