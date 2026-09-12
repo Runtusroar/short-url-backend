@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-shorturl}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shorturl}
@@ -19,6 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "127.0.0.1:16379:6379"
     networks:
@@ -33,6 +35,7 @@ services:
 
   geoipupdate:
     image: maxmindinc/geoipupdate:latest
+    restart: unless-stopped
     profiles: ["geoip"]
     environment:
       GEOIPUPDATE_ACCOUNT_ID: ${GEOIPUPDATE_ACCOUNT_ID}
@@ -45,6 +48,7 @@ services:
   app:
     build: .
     container_name: short_url_app
+    restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://shorturl:shorturl@db:5432/shorturl}

@@ -60,6 +60,16 @@ def test_compose_binds_all_published_backend_ports_to_loopback():
         ] == [binding]
 
 
+def test_compose_services_restart_after_a_host_reboot():
+    """Every long-running production service must recover with Docker itself."""
+    config = _compose_config(
+        {"SECRET_KEY": "development-secret-key", "COMPOSE_PROFILES": "geoip"}
+    )
+
+    for service in ("db", "redis", "app", "geoipupdate"):
+        assert config["services"][service]["restart"] == "unless-stopped"
+
+
 def test_compose_uses_configured_postgres_credentials_consistently():
     """Production database credentials must not be replaced by development literals."""
     config = _compose_config(
