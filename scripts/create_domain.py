@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
 
+from app.core.domain_name import normalize_dns_hostname
 from app.db.session import AsyncSessionLocal
 from app.db.models import Domain
 
@@ -14,7 +15,11 @@ async def main():
     if len(sys.argv) != 2:
         print("Usage: python scripts/create_domain.py <domain-name>")
         sys.exit(1)
-    name = sys.argv[1].lower()
+    try:
+        name = normalize_dns_hostname(sys.argv[1])
+    except ValueError as exc:
+        print(f"Invalid domain name: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     async with AsyncSessionLocal() as db:
         existing = await db.execute(select(Domain).where(Domain.name == name))

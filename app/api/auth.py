@@ -19,6 +19,30 @@ def _issue_token(user: User) -> str:
     return create_access_token({"sub": str(user.id)})
 
 
+async def _current_user_response(db: AsyncSession, user: User) -> UserResponse:
+    if user.role == UserRole.ADMIN:
+        domain_access = []
+    else:
+        result = await db.execute(
+            select(UserDomainAccess)
+            .where(UserDomainAccess.user_id == user.id)
+            .order_by(UserDomainAccess.domain_id)
+        )
+        domain_access = [
+            DomainGrantResponse(domain_id=grant.domain_id, access_level=grant.access_level)
+            for grant in result.scalars()
+        ]
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        domain_access=domain_access,
+    )
+
+
 @router.post(
     "/login",
     response_model=Token,
@@ -61,7 +85,7 @@ async def login_cookie(
         samesite="lax",
         secure=settings.cookie_secure,
     )
-    return user
+    return await _current_user_response(db, user)
 
 
 @router.post("/logout")
@@ -75,31 +99,4 @@ async def me(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.ADMIN:
-        return UserResponse(
-            id=current_user.id,
-            username=current_user.username,
-            role=current_user.role,
-            is_active=current_user.is_active,
-            created_at=current_user.created_at,
-            updated_at=current_user.updated_at,
-            domain_access=[],
-        )
-
-    result = await db.execute(
-        select(UserDomainAccess)
-        .where(UserDomainAccess.user_id == current_user.id)
-        .order_by(UserDomainAccess.domain_id)
-    )
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        role=current_user.role,
-        is_active=current_user.is_active,
-        created_at=current_user.created_at,
-        updated_at=current_user.updated_at,
-        domain_access=[
-            DomainGrantResponse(domain_id=grant.domain_id, access_level=grant.access_level)
-            for grant in result.scalars()
-        ],
-    )
+    return await _current_user_response(db, current_user)

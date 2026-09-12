@@ -74,6 +74,18 @@ async def test_me_returns_the_current_subaccount_grants_and_an_explicit_empty_ad
     assert admin.json()["domain_access"] == []
 
 
+async def test_login_cookie_returns_the_same_subaccount_contract_as_me(client):
+    """Cookie session bootstrapping must include the grants used by the UI authorization flow."""
+    login = await client.post(
+        "/api/auth/login-cookie",
+        data={"username": "operator", "password": "operator123"},
+    )
+    me = await client.get("/api/auth/me")
+
+    assert login.status_code == me.status_code == 200
+    assert login.json() == me.json()
+
+
 async def test_me_admin_ignores_residual_grants_without_querying_the_grant_table(
     client, admin_token, domain_a
 ):

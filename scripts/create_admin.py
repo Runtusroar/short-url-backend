@@ -4,11 +4,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.db.session import AsyncSessionLocal
 from app.core.security import get_password_hash
-from app.db.models import User
+from app.db.models import User, UserDomainAccess
 
 
 async def main():
@@ -23,6 +23,7 @@ async def main():
             user.password_hash = get_password_hash(password)
             user.role = "admin"
             user.is_active = True
+            await db.execute(delete(UserDomainAccess).where(UserDomainAccess.user_id == user.id))
             print(f"Updated existing user '{username}' as admin")
         else:
             user = User(
