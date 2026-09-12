@@ -2,17 +2,17 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: shorturl
-      POSTGRES_PASSWORD: shorturl
-      POSTGRES_DB: shorturl
+      POSTGRES_USER: ${POSTGRES_USER:-shorturl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shorturl}
+      POSTGRES_DB: ${POSTGRES_DB:-shorturl}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "18543:5432"
+      - "127.0.0.1:18543:5432"
     networks:
       - short_url_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shorturl -d shorturl"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "16379:6379"
+      - "127.0.0.1:16379:6379"
     networks:
       - short_url_network
     volumes:
