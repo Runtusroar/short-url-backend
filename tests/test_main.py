@@ -27,6 +27,47 @@ def test_blank_non_maxmind_numeric_setting_is_not_silently_converted_to_none(mon
         Settings(_env_file=None)
 
 
+def test_app_env_is_a_closed_deployment_mode(monkeypatch):
+    """A typo in APP_ENV must not silently skip production-only safeguards."""
+    monkeypatch.setenv("APP_ENV", "staging")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "secret_key",
+    [
+        "",
+        "dev-secret-key-change-in-production",
+        "change-me-to-a-random-secret-key-at-least-32-characters",
+        "too-short",
+    ],
+)
+def test_production_rejects_empty_default_or_short_secret_keys(monkeypatch, secret_key):
+    """Weak signing keys in production would forge login and cursor credentials."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", secret_key)
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_production_requires_secure_cookies_but_development_remains_usable(monkeypatch):
+    """Production cookie transport must be explicit without breaking local startup."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "a-strong-production-secret-key-with-32-chars")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+    configured = Settings(app_env="development", cookie_secure=False, _env_file=None)
+    assert configured.app_env == "development"
+    assert configured.cookie_secure is False
+
+
 def test_unhandled_exception_logs_a_traceback_but_keeps_the_stable_error_envelope(caplog):
     """Diagnostics may contain the failure, while clients must receive no implementation detail."""
     isolated = FastAPI()

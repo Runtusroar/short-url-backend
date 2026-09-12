@@ -22,6 +22,17 @@ class PolicyMode(StrEnum):
     BLOCK = "block"
 
 
+class Platform(StrEnum):
+    DESKTOP = "desktop"
+    SMARTPHONE = "smartphone"
+    TABLET = "tablet"
+    TV = "tv"
+    CONSOLE = "console"
+    WEARABLE = "wearable"
+    BOT = "bot"
+    OTHER = "other"
+
+
 class AccessResult(StrEnum):
     ALLOWED = "allowed"
     BLOCKED = "blocked"

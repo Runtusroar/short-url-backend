@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, ErrorCode, NotFoundError
 from app.db.session import get_db
-from app.db.models import Domain, ShortLink, User, UserDomainAccess, UserRole
+from app.db.models import Domain, User, UserDomainAccess, UserRole
 from app.dependencies import get_current_user, require_admin
 from app.schemas.common import Page
 from app.schemas.domain import DomainCreate, DomainResponse, DomainUpdate
@@ -22,12 +22,18 @@ async def list_domains(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    statement = select(Domain).where(Domain.is_active.is_(True))
-    count_statement = select(func.count()).select_from(Domain).where(Domain.is_active.is_(True))
+    statement = select(Domain)
+    count_statement = select(func.count()).select_from(Domain)
     if current_user.role != UserRole.ADMIN:
-        statement = statement.join(UserDomainAccess).where(UserDomainAccess.user_id == current_user.id)
+        statement = statement.join(UserDomainAccess).where(
+            UserDomainAccess.user_id == current_user.id,
+            Domain.is_active.is_(True),
+        )
         count_statement = (
-            count_statement.join(UserDomainAccess).where(UserDomainAccess.user_id == current_user.id)
+            count_statement.join(UserDomainAccess).where(
+                UserDomainAccess.user_id == current_user.id,
+                Domain.is_active.is_(True),
+            )
         )
     total = await db.scalar(count_statement) or 0
     result = await db.execute(
@@ -89,8 +95,5 @@ async def delete_domain(
         domain = await db.scalar(select(Domain).where(Domain.id == domain_id).with_for_update())
         if not domain:
             raise NotFoundError("域名")
-        referenced = await db.scalar(select(ShortLink.id).where(ShortLink.domain_id == domain.id).limit(1))
-        if referenced:
-            raise ConflictError("域名仍被短链接引用", ErrorCode.DOMAIN_IN_USE)
-        await db.delete(domain)
+        domain.is_active = False
     return Response(status_code=status.HTTP_204_NO_CONTENT)

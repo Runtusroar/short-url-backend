@@ -46,11 +46,13 @@ services:
     build: .
     container_name: short_url_app
     environment:
+      APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://shorturl:shorturl@db:5432/shorturl}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SECRET_KEY: ${SECRET_KEY}
       GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/usr/share/GeoIP/GeoLite2-Country.mmdb}
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}

@@ -3,11 +3,13 @@ from typing import Mapping
 
 from device_detector import DeviceDetector
 
+from app.db.models import Platform
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedUserAgent:
     raw: str | None
-    platform: str
+    platform: Platform
     browser: str | None
     browser_version: str | None
     os: str | None
@@ -19,15 +21,15 @@ class ParsedUserAgent:
     bot_name: str | None
 
 
-def _normalize_platform(device_type: str | None) -> str:
+def _normalize_platform(device_type: str | None) -> Platform:
     return {
-        "desktop": "desktop",
-        "smartphone": "smartphone",
-        "tablet": "tablet",
-        "tv": "tv",
-        "console": "console",
-        "wearable": "wearable",
-    }.get(device_type or "", "other")
+        "desktop": Platform.DESKTOP,
+        "smartphone": Platform.SMARTPHONE,
+        "tablet": Platform.TABLET,
+        "tv": Platform.TV,
+        "console": Platform.CONSOLE,
+        "wearable": Platform.WEARABLE,
+    }.get(device_type or "", Platform.OTHER)
 
 
 def parse_user_agent(
@@ -37,7 +39,7 @@ def parse_user_agent(
     if not ua:
         return ParsedUserAgent(
             None,
-            "other",
+            Platform.OTHER,
             None,
             None,
             None,
@@ -56,7 +58,7 @@ def parse_user_agent(
 
     return ParsedUserAgent(
         raw=ua,
-        platform="bot" if is_bot else _normalize_platform(device_type),
+        platform=Platform.BOT if is_bot else _normalize_platform(device_type),
         browser=detector.client_name() or None,
         browser_version=detector.client_version() or None,
         os=detector.os_name() or None,

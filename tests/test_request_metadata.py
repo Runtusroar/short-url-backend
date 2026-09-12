@@ -1,6 +1,6 @@
 from starlette.requests import Request
 
-from app.services.request_metadata import extract_request_metadata
+from app.services.request_metadata import extract_request_metadata, parse_authority
 
 
 def _request(*, headers: dict[str, str] | None = None, client_ip: str = "172.25.0.1") -> Request:
@@ -87,12 +87,11 @@ def test_trusted_x_real_ip_wins_then_xff_first_address_is_used(monkeypatch):
     assert invalid_ip.ip is None
 
 
-def test_authority_parser_normalizes_dns_and_ipv6_ports(monkeypatch):
-    """Changing the authority representation would break domain lookup and audit URLs."""
+def test_authority_parser_normalizes_dns_ports_and_rejects_ip_literals(monkeypatch):
+    """Tenant routing only accepts the shared DNS-hostname domain contract."""
     monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", False)
 
     dns = extract_request_metadata(_request(headers={"Host": "Example.COM.:443"}))
-    ipv6 = extract_request_metadata(_request(headers={"Host": "[2001:db8::7]:8443"}))
 
     assert dns.request_url == "http://example.com:443/CampaignA?source=test"
-    assert ipv6.request_url == "http://[2001:db8::7]:8443/CampaignA?source=test"
+    assert parse_authority("[2001:db8::7]:8443") is None

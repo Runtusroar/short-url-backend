@@ -143,6 +143,53 @@ async def test_policy_rejects_noncanonical_country_and_referer_values(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("destinations", "policy"),
+    [
+        (
+            [
+                {
+                    "url": "javascript:alert(1)",
+                    "type": "allowed",
+                    "weight": 1,
+                    "is_active": True,
+                }
+            ],
+            None,
+        ),
+        (
+            None,
+            {
+                "country_mode": "off",
+                "countries": [],
+                "platform_mode": "allow",
+                "platforms": ["mobile"],
+                "referer_mode": "off",
+                "referer_patterns": [],
+                "block_proxy": False,
+                "block_bot": False,
+            },
+        ),
+    ],
+)
+async def test_short_link_contract_rejects_unsafe_destinations_and_unknown_platforms(
+    client, operator_token, domain_a, destinations, policy
+):
+    """Schema validation must surface unsafe redirect inputs as the standard 422 envelope."""
+    overrides = {"custom_alias": f"Unsafe{uuid.uuid4().hex[:12]}"}
+    if destinations is not None:
+        overrides["destinations"] = destinations
+    if policy is not None:
+        overrides["policy"] = policy
+    response = await client.post(
+        "/api/short-links", headers=auth(operator_token), json=aggregate_payload(str(domain_a.id), **overrides)
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
 async def test_read_access_can_list_and_detail_but_cannot_mutate(client, admin_token, read_token, domain_a):
     created = await client.post(
         "/api/short-links", headers=auth(admin_token), json=aggregate_payload(str(domain_a.id), custom_alias="ReadAccessA")

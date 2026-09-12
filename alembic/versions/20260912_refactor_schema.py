@@ -10,6 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.core.domain_name import normalize_dns_hostname
 from app.services.policy_migration import convert_legacy_policy
 
 
@@ -76,9 +77,42 @@ def _preflight_and_copy_policies() -> None:
         )
 
 
+def _preflight_and_normalize_domains() -> None:
+    """Validate every legacy tenant before any migration structure is changed."""
+    bind = op.get_bind()
+    rows = bind.execute(sa.text("SELECT id, name FROM domains ORDER BY id")).mappings().all()
+    invalid = []
+    normalized_rows = []
+    by_name: dict[str, list[str]] = {}
+    for row in rows:
+        try:
+            normalized = normalize_dns_hostname(row["name"])
+        except ValueError as exc:
+            invalid.append(f"{row['id']}={row['name']!r} ({exc})")
+            continue
+        normalized_rows.append((row["id"], normalized))
+        by_name.setdefault(normalized, []).append(str(row["id"]))
+    if invalid:
+        raise RuntimeError("Cannot safely normalize invalid legacy domain entries: " + ", ".join(invalid))
+    conflicts = {
+        name: ids for name, ids in by_name.items() if len(ids) > 1
+    }
+    if conflicts:
+        values = ", ".join(
+            f"{name} ({', '.join(ids)})" for name, ids in sorted(conflicts.items())
+        )
+        raise RuntimeError("Cannot safely normalize: normalized legacy domains conflict: " + values)
+    for domain_id, normalized in normalized_rows:
+        bind.execute(
+            sa.text("UPDATE domains SET name = :name WHERE id = :id AND name <> :name"),
+            {"id": domain_id, "name": normalized},
+        )
+
+
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
     bind = op.get_bind()
+    _preflight_and_normalize_domains()
     bind.execute(
         sa.text(
             """

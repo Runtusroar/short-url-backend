@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.core.errors import NotFoundError, PermissionDeniedError
+from app.core.errors import PermissionDeniedError
 from app.db.models import AccessLevel, Domain, User, UserDomainAccess
 from app.services.authorization import (
     authorized_domain_ids_query,
@@ -43,7 +43,7 @@ async def test_inactive_grant_is_excluded_and_rejected(db, make_user, make_domai
     domain_ids = set((await db.scalars(authorized_domain_ids_query(reader))).all())
 
     assert domain.id not in domain_ids
-    with pytest.raises(NotFoundError):
+    with pytest.raises(PermissionDeniedError):
         await ensure_domain_access(db, reader, domain.id, AccessLevel.READ)
 
 

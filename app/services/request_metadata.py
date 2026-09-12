@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from ipaddress import IPv6Address, ip_address
+from ipaddress import ip_address
 
 from fastapi import Request
 
 from app.core.config import settings
+from app.core.domain_name import normalize_dns_hostname
 from app.services.geoip import get_country
 from app.services.user_agent import ParsedUserAgent, parse_user_agent
 
@@ -50,29 +51,11 @@ def _valid_port(value: str) -> int | None:
     return port if 1 <= port <= 65535 else None
 
 
-def _canonical_dns_or_ipv4(value: str) -> str | None:
-    host = value[:-1] if value.endswith(".") else value
-    if not host or host.endswith("."):
-        return None
+def _canonical_dns_hostname(value: str) -> str | None:
     try:
-        parsed_ip = ip_address(host)
+        return normalize_dns_hostname(value)
     except ValueError:
-        pass
-    else:
-        return str(parsed_ip) if not isinstance(parsed_ip, IPv6Address) else None
-
-    labels = host.split(".")
-    if any(
-        not label
-        or len(label) > 63
-        or label[0] == "-"
-        or label[-1] == "-"
-        or not all(character.isascii() and (character.isalnum() or character == "-") for character in label)
-        for label in labels
-    ):
         return None
-    canonical = host.lower()
-    return canonical if len(canonical) <= 253 else None
 
 
 def parse_authority(value: str | None) -> RequestAuthority | None:
@@ -80,34 +63,13 @@ def parse_authority(value: str | None) -> RequestAuthority | None:
     if not value or value != value.strip() or any(character in value for character in "@/?#\\"):
         return None
 
-    if value.startswith("["):
-        close = value.find("]")
-        if close < 0 or value.count("]") != 1:
-            return None
-        literal = value[1:close]
-        suffix = value[close + 1 :]
-        if suffix and not suffix.startswith(":"):
-            return None
-        try:
-            parsed_ip = ip_address(literal)
-        except ValueError:
-            return None
-        if not isinstance(parsed_ip, IPv6Address):
-            return None
-        port = _valid_port(suffix[1:]) if suffix else None
-        if suffix and port is None:
-            return None
-        host = str(parsed_ip)
-        authority = f"[{host}]" + (f":{port}" if port is not None else "")
-        return RequestAuthority(host, authority)
-
     if "[" in value or "]" in value or value.count(":") > 1:
         return None
     host_part, separator, port_part = value.partition(":")
     port = _valid_port(port_part) if separator else None
     if separator and port is None:
         return None
-    host = _canonical_dns_or_ipv4(host_part)
+    host = _canonical_dns_hostname(host_part)
     if host is None:
         return None
     authority = host + (f":{port}" if port is not None else "")

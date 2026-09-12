@@ -49,7 +49,7 @@ ROUTE_COVERAGE = {
     ("GET", "/api/users"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
     ("POST", "/api/users"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
     ("PUT", "/api/users/{user_id}"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
-    ("GET", "/api/domains"): ("tests/api/test_domains.py::test_authenticated_domain_listing_is_active_and_scoped",),
+    ("GET", "/api/domains"): ("tests/api/test_domains.py::test_authenticated_domain_listing_keeps_inactive_domains_admin_visible_and_subaccounts_scoped",),
     ("POST", "/api/domains"): ("tests/api/test_domains.py::test_admin_can_create_update_and_delete_domain",),
     ("PUT", "/api/domains/{domain_id}"): ("tests/api/test_domains.py::test_admin_can_create_update_and_delete_domain",),
     ("DELETE", "/api/domains/{domain_id}"): ("tests/api/test_domains.py::test_admin_can_create_update_and_delete_domain",),

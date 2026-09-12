@@ -32,6 +32,124 @@ def _counts(connection) -> LegacyCounts:
     )
 
 
+@pytest.mark.parametrize("legacy_name", ["Example.COM", "Example.COM."])
+def test_upgrade_normalizes_legacy_domain_case_and_one_trailing_dot(monkeypatch, legacy_name):
+    """Legacy tenant lookup must agree with the case-insensitive DNS Host contract after upgrade."""
+    schema = f"domain_normalize_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+    domain_id = uuid.uuid4()
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO domains (id, name, is_active, is_default, created_at)
+                    VALUES (:id, :name, true, false, now())
+                    """
+                ),
+                {"id": domain_id, "name": legacy_name},
+            )
+
+        command.upgrade(_alembic_config(), "20260912_refactor")
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT name FROM domains WHERE id = :id"), {"id": domain_id}
+            ).scalar_one() == "example.com"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def test_upgrade_refuses_invalid_legacy_domain_before_destructive_changes(monkeypatch):
+    """A malformed stored tenant must stop before the migration drops any old structures."""
+    schema = f"domain_invalid_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+    domain_id = uuid.uuid4()
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO domains (id, name, is_active, is_default, created_at)
+                    VALUES (:id, 'https://invalid.example/path', true, false, now())
+                    """
+                ),
+                {"id": domain_id},
+            )
+
+        with pytest.raises(RuntimeError, match="invalid legacy domain"):
+            command.upgrade(_alembic_config(), "20260912_refactor")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT name FROM domains WHERE id = :id"), {"id": domain_id}
+            ).scalar_one() == "https://invalid.example/path"
+            assert connection.execute(text("SELECT to_regclass('user_domains')")).scalar_one() == "user_domains"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def test_upgrade_refuses_colliding_normalized_legacy_domains_before_destructive_changes(monkeypatch):
+    """Normalizing two legacy spellings into one tenant must never choose a row to overwrite."""
+    schema = f"domain_conflict_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+    first_id, second_id = uuid.uuid4(), uuid.uuid4()
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO domains (id, name, is_active, is_default, created_at)
+                    VALUES
+                        (:first_id, 'Example.COM.', true, false, now()),
+                        (:second_id, 'example.com', true, false, now())
+                    """
+                ),
+                {"first_id": first_id, "second_id": second_id},
+            )
+
+        with pytest.raises(RuntimeError, match="normalized legacy domains conflict"):
+            command.upgrade(_alembic_config(), "20260912_refactor")
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT id, name FROM domains WHERE id IN (:first_id, :second_id) ORDER BY id"),
+                {"first_id": first_id, "second_id": second_id},
+            ).all()
+            assert {(row.id, row.name) for row in rows} == {
+                (first_id, "Example.COM."),
+                (second_id, "example.com"),
+            }
+            assert connection.execute(text("SELECT to_regclass('access_rules')")).scalar_one() == "access_rules"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
 def test_upgrade_preserves_legacy_rows_and_backfills_log_snapshots(monkeypatch):
     """Dropping or changing a legacy value during normalization is data loss."""
     schema = f"migration_{uuid.uuid4().hex}"

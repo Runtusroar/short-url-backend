@@ -1,6 +1,14 @@
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+_DEFAULT_SECRET_KEYS = frozenset(
+    {
+        "dev-secret-key-change-in-production",
+        "change-me-to-a-random-secret-key-at-least-32-characters",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -20,6 +28,14 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24
     cookie_secure: bool = False
 
+    @field_validator("app_env")
+    @classmethod
+    def validate_app_env(cls, value: str) -> str:
+        environment = value.strip().lower()
+        if environment not in {"development", "test", "production"}:
+            raise ValueError("APP_ENV 必须是 development、test 或 production")
+        return environment
+
     @field_validator("maxmind_account_id", "maxmind_license_key", mode="before")
     @classmethod
     def empty_maxmind_credentials_are_none(cls, value: object) -> object:
@@ -36,6 +52,21 @@ class Settings(BaseSettings):
         except (TypeError, ZoneInfoNotFoundError) as exc:
             raise ValueError("必须是有效的 IANA 时区") from exc
         return value
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if self.app_env != "production":
+            return self
+        secret = self.secret_key.strip()
+        if (
+            not secret
+            or secret in _DEFAULT_SECRET_KEYS
+            or len(secret) < 32
+        ):
+            raise ValueError("生产环境 SECRET_KEY 必须是至少 32 字符且非默认的随机密钥")
+        if not self.cookie_secure:
+            raise ValueError("生产环境必须设置 COOKIE_SECURE=true")
+        return self
 
 
 settings = Settings()

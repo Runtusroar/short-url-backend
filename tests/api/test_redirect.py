@@ -510,20 +510,17 @@ async def test_short_code_is_case_sensitive_and_malformed_authorities_do_not_mat
 
 
 @pytest.mark.asyncio
-async def test_normalized_dns_and_ipv6_authorities_select_their_exact_domain(client):
-    """Dropping ports or IPv6 brackets from snapshots would make auditing ambiguous."""
+async def test_normalized_dns_authority_selects_its_exact_domain_and_rejects_ip_literals(client):
+    """Redirect tenant selection is limited to canonical ASCII DNS hostnames."""
     dns_domain, dns_link = await _make_redirect_link(host="canonical.example")
-    ipv6_domain, ipv6_link = await _make_redirect_link(host="2001:db8::8")
 
     dns = await client.get("/CampaignA", headers={"Host": "CANONICAL.EXAMPLE.:443"}, follow_redirects=False)
     ipv6 = await client.get("/CampaignA", headers={"Host": "[2001:db8::8]:8443"}, follow_redirects=False)
 
     assert dns.headers["location"] == "https://allowed.example/landing"
-    assert ipv6.headers["location"] == "https://allowed.example/landing"
+    assert ipv6.status_code == 404
     assert dns_domain.name == "canonical.example"
-    assert ipv6_domain.name == "2001:db8::8"
     assert (await _latest_log(dns_link.id)).request_url == "http://canonical.example:443/CampaignA"
-    assert (await _latest_log(ipv6_link.id)).request_url == "http://[2001:db8::8]:8443/CampaignA"
 
 
 @pytest.mark.asyncio

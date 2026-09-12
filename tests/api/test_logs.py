@@ -150,6 +150,35 @@ async def test_subaccount_domain_failures_use_one_denial_envelope_for_logs_and_d
             assert response.json()["code"] == "PERMISSION_DENIED"
 
 
+async def test_admin_can_audit_a_soft_deleted_domain_while_subaccounts_cannot_probe_it(
+    client, admin_token, read_token
+):
+    """Domain deletion must preserve audit ownership without exposing inactive tenants to subaccounts."""
+    domain = await _authorized_domain()
+    logged = await _log(domain.id, accessed_at=datetime.now(timezone.utc))
+
+    deleted = await client.delete(f"/api/domains/{domain.id}", headers=_auth(admin_token))
+    assert deleted.status_code == 204, deleted.text
+
+    logs = await client.get(
+        "/api/access-logs", headers=_auth(admin_token), params={"domain_id": str(domain.id)}
+    )
+    dashboard = await client.get(
+        "/api/dashboard", headers=_auth(admin_token), params={"domain_id": str(domain.id), "days": 7}
+    )
+    assert logs.status_code == 200, logs.text
+    assert [row["id"] for row in logs.json()["items"]] == [str(logged.id)]
+    assert dashboard.status_code == 200, dashboard.text
+    assert dashboard.json()["total"] == 1
+
+    for endpoint, params in (("/api/access-logs", {}), ("/api/dashboard", {"days": 7})):
+        denied = await client.get(
+            endpoint, headers=_auth(read_token), params={"domain_id": str(domain.id), **params}
+        )
+        assert denied.status_code == 403
+        assert denied.json()["code"] == "PERMISSION_DENIED"
+
+
 async def test_access_logs_use_timezone_aware_inclusive_time_boundaries(client, read_token):
     """Using UTC calendar dates for local filtering would drop visits near midnight in the configured zone."""
     domain = await _authorized_domain()

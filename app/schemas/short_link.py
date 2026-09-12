@@ -1,10 +1,13 @@
 import re
 from datetime import datetime
+from ipaddress import ip_address
 from uuid import UUID
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.db.models import PolicyMode, TargetUrlType
+from app.core.domain_name import normalize_dns_hostname
+from app.db.models import Platform, PolicyMode, TargetUrlType
 from app.services.short_code import validate_custom_alias
 
 
@@ -15,12 +18,39 @@ _REFERER_PATTERN_RE = re.compile(
 )
 
 
+def _validate_destination_url(value: str) -> str:
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("目标 URL 不能包含控制字符")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("目标 URL 的主机或端口无效") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or hostname is None:
+        raise ValueError("目标 URL 必须是绝对 http 或 https 地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("目标 URL 不能包含用户信息")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("目标 URL 端口无效")
+    try:
+        ip_address(hostname)
+    except ValueError:
+        try:
+            normalize_dns_hostname(hostname)
+        except ValueError as exc:
+            raise ValueError("目标 URL 的主机无效") from exc
+    return value
+
+
 class DestinationWrite(BaseModel):
     id: UUID | None = None
     url: str = Field(min_length=1, max_length=4096)
     type: TargetUrlType
     weight: int = Field(default=1, ge=0)
     is_active: bool = True
+
+    _validate_url = field_validator("url")(_validate_destination_url)
 
 
 class DestinationResponse(BaseModel):
@@ -52,9 +82,16 @@ class LinkPolicyWrite(BaseModel):
     @field_validator("platforms")
     @classmethod
     def normalize_platforms(cls, platforms: list[str]) -> list[str]:
-        normalized = [platform.strip().lower() for platform in platforms]
-        if any(not platform for platform in normalized):
-            raise ValueError("平台不能为空")
+        normalized = []
+        for value in platforms:
+            platform = value.strip().lower()
+            try:
+                Platform(platform)
+            except ValueError as exc:
+                raise ValueError("平台必须是运行时支持的设备类型")
+
+            if platform not in normalized:
+                normalized.append(platform)
         return normalized
 
     @field_validator("referer_patterns")

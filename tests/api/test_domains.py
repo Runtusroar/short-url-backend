@@ -11,7 +11,7 @@ def auth(token: str) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_authenticated_domain_listing_is_active_and_scoped(client, admin_token, read_token, domain_a):
+async def test_authenticated_domain_listing_keeps_inactive_domains_admin_visible_and_subaccounts_scoped(client, admin_token, read_token, domain_a):
     admin = await client.get("/api/domains", headers=auth(admin_token))
     assert admin.status_code == 200, admin.text
     assert {item["name"] for item in admin.json()["items"]} >= {"test.local", "second.test.local"}
@@ -46,6 +46,24 @@ async def test_admin_can_create_update_and_delete_domain(client, admin_token):
 
     deleted = await client.delete(f"/api/domains/{created.json()['id']}", headers=auth(admin_token))
     assert deleted.status_code == 204, deleted.text
+
+
+@pytest.mark.asyncio
+async def test_domain_create_and_update_return_the_canonical_dns_name(client, admin_token):
+    """Admin responses must expose the same normalized tenant key routing uses."""
+    created = await client.post(
+        "/api/domains", headers=auth(admin_token), json={"name": "Example.COM."}
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "example.com"
+
+    updated = await client.put(
+        f"/api/domains/{created.json()['id']}",
+        headers=auth(admin_token),
+        json={"name": "Other.Example.COM."},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["name"] == "other.example.com"
 
 
 @pytest.mark.asyncio
@@ -100,7 +118,7 @@ async def test_subaccounts_cannot_update_or_delete_domains(client, admin_token, 
 
 
 @pytest.mark.asyncio
-async def test_domain_conflict_missing_and_referenced_domain_cannot_be_deleted(client, admin_token):
+async def test_domain_conflict_missing_and_referenced_domain_is_soft_deleted(client, admin_token):
     duplicate = await client.post("/api/domains", headers=auth(admin_token), json={"name": "test.local"})
     assert duplicate.status_code == 409
     assert duplicate.json()["code"] == "DOMAIN_CONFLICT"
@@ -129,6 +147,9 @@ async def test_domain_conflict_missing_and_referenced_domain_cannot_be_deleted(c
         )
         await session.commit()
 
-    blocked = await client.delete(f"/api/domains/{domain.json()['id']}", headers=auth(admin_token))
-    assert blocked.status_code == 409
-    assert blocked.json()["code"] == "DOMAIN_IN_USE"
+    deleted = await client.delete(f"/api/domains/{domain.json()['id']}", headers=auth(admin_token))
+    assert deleted.status_code == 204, deleted.text
+
+    domains = await client.get("/api/domains", headers=auth(admin_token))
+    retained = next(item for item in domains.json()["items"] if item["id"] == domain.json()["id"])
+    assert retained["is_active"] is False
