@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from app.core.config import settings
@@ -104,6 +105,54 @@ def test_upgrade_refuses_invalid_legacy_domain_before_destructive_changes(monkey
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         engine.dispose()
+
+
+def test_upgrade_uses_frozen_domain_rules_when_application_normalizer_changes(monkeypatch):
+    """A later app release must not reinterpret legacy migration data during an upgrade."""
+    schema = f"domain_frozen_{uuid.uuid4().hex}"
+    base_url = settings.database_url.replace("+asyncpg", "+psycopg")
+    schema_url = f"{base_url}?options=-csearch_path%3D{schema}"
+    engine = create_engine(schema_url)
+    monkeypatch.setattr(settings, "database_url", schema_url)
+    domain_id = uuid.uuid4()
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        command.upgrade(_alembic_config(), "a9e56b03bf5f")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO domains (id, name, is_active, is_default, created_at)
+                    VALUES (:id, 'K.example', true, false, now())
+                    """
+                ),
+                {"id": domain_id},
+            )
+
+        from app.core import domain_name
+
+        monkeypatch.setattr(domain_name, "normalize_dns_hostname", lambda value: value.lower())
+        with pytest.raises(RuntimeError, match="invalid legacy domain"):
+            command.upgrade(_alembic_config(), "20260912_refactor")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT name FROM domains WHERE id = :id"), {"id": domain_id}
+            ).scalar_one() == "K.example"
+            assert connection.execute(text("SELECT to_regclass('user_domains')")).scalar_one() == "user_domains"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def test_normalization_migration_is_explicitly_forward_only():
+    """The approved data-preserving migration intentionally does not offer a destructive downgrade."""
+    migration = ScriptDirectory.from_config(_alembic_config()).get_revision("20260912_refactor").module
+
+    with pytest.raises(NotImplementedError, match="forward-only"):
+        migration.downgrade()
 
 
 def test_upgrade_refuses_colliding_normalized_legacy_domains_before_destructive_changes(monkeypatch):

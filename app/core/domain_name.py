@@ -14,10 +14,14 @@ def normalize_dns_hostname(value: str) -> str:
     """
     if not isinstance(value, str):
         raise ValueError("域名必须是字符串")
-    hostname = value.strip().lower()
+    if value != value.strip() or not value.isascii():
+        raise ValueError("域名必须是有效的 ASCII DNS 主机名")
+    # ASCII-only input makes case normalization deterministic and prevents a
+    # Unicode case fold (for example K -> k) from bypassing the ASCII policy.
+    hostname = value.lower()
     if hostname.endswith("."):
         hostname = hostname[:-1]
-    if not hostname or not hostname.isascii() or len(hostname) > 253:
+    if not hostname or len(hostname) > 253:
         raise ValueError("域名必须是有效的 ASCII DNS 主机名")
     try:
         ip_address(hostname)

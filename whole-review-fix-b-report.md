@@ -56,3 +56,31 @@ out of scope.
   successfully against a fresh, isolated PostgreSQL container with no published
   ports. The temporary verification container, network, stopped Compose
   containers, and unused verification volumes were removed afterwards.
+
+## Review round 1 follow-up
+
+- ASCII validation now occurs before any lowercase operation. Unicode case-fold
+  lookalikes such as `K.example` are rejected consistently by domain APIs,
+  request Host parsing, destination authorities, and migration preflight.
+- Domain names and destination URLs reject leading/trailing whitespace rather
+  than trimming it. Destination validation also rejects whitespace anywhere in
+  the URL authority/value and checks the raw authority for non-ASCII before
+  `urlsplit().hostname` can case-fold it.
+- The domain-normalization algorithm in `20260912_refactor_schema` is frozen in
+  the migration itself. A test changes the application helper during a real
+  legacy upgrade and confirms the migration still rejects the Unicode legacy
+  name without dropping old structures.
+- The migration remains intentionally forward-only, as approved by the design:
+  reconstructing removed legacy policy/default structures would be destructive
+  and destructive downgrade support is not a release requirement. The migration
+  docstring and an explicit test record that contract.
+- Repeated domain DELETE calls are idempotent. An integration test holds the
+  actual PostgreSQL row lock, verifies a second API DELETE blocks on it, then
+  confirms the second request completes successfully after release.
+
+### Review round 1 verification
+
+- `DATABASE_URL=.../shorturl_review_b_test make test` — 309 passed
+- `DATABASE_URL=.../shorturl_review_b_test uv run pytest tests/api -q` — 137 passed
+- `DATABASE_URL=.../shorturl_review_b_test uv run pytest tests/test_migrations.py -q` — 11 passed
+- `uv run python -m compileall -q app alembic scripts tests` and `git diff --check` — passed

@@ -158,6 +158,17 @@ async def test_policy_rejects_noncanonical_country_and_referer_values(
             None,
         ),
         (
+            [
+                {
+                    "url": "https:// example.com/path",
+                    "type": "allowed",
+                    "weight": 1,
+                    "is_active": True,
+                }
+            ],
+            None,
+        ),
+        (
             None,
             {
                 "country_mode": "off",

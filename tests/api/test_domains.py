@@ -1,9 +1,11 @@
+import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, select, text
 
-from app.db import AsyncSessionLocal
+from app.db import AsyncSessionLocal, engine
+from app.db.models import Domain
 
 
 def auth(token: str) -> dict[str, str]:
@@ -49,6 +51,60 @@ async def test_admin_can_create_update_and_delete_domain(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_domain_delete_is_idempotent(client, admin_token):
+    """Retrying a completed deactivation must preserve the same audit identity and success result."""
+    created = await client.post(
+        "/api/domains", headers=auth(admin_token), json={"name": f"{uuid.uuid4().hex[:16]}.retry.test"}
+    )
+    assert created.status_code == 201, created.text
+    domain_id = created.json()["id"]
+
+    for _ in range(2):
+        response = await client.delete(f"/api/domains/{domain_id}", headers=auth(admin_token))
+        assert response.status_code == 204, response.text
+
+    domains = await client.get("/api/domains", headers=auth(admin_token))
+    retained = next(item for item in domains.json()["items"] if item["id"] == domain_id)
+    assert retained["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_domain_deletes_serialize_on_the_postgresql_row_lock(client, admin_token):
+    """The second real API delete must wait on the row lock and still complete idempotently."""
+    created = await client.post(
+        "/api/domains", headers=auth(admin_token), json={"name": f"{uuid.uuid4().hex[:16]}.lock.test"}
+    )
+    assert created.status_code == 201, created.text
+    domain_id = uuid.UUID(created.json()["id"])
+    lock_query_seen = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def record_lock_query(_, __, statement, ___, ____, _____):
+        if "from domains" in statement.lower() and "for update" in statement.lower():
+            loop.call_soon_threadsafe(lock_query_seen.set)
+
+    delete_task = None
+    listener_attached = False
+    try:
+        async with AsyncSessionLocal() as lock_session:
+            async with lock_session.begin():
+                await lock_session.scalar(select(Domain).where(Domain.id == domain_id).with_for_update())
+                event.listen(engine.sync_engine, "before_cursor_execute", record_lock_query)
+                listener_attached = True
+                delete_task = asyncio.create_task(
+                    client.delete(f"/api/domains/{domain_id}", headers=auth(admin_token))
+                )
+                await asyncio.wait_for(lock_query_seen.wait(), timeout=1)
+                assert not delete_task.done()
+        response = await asyncio.wait_for(delete_task, timeout=1)
+    finally:
+        if listener_attached:
+            event.remove(engine.sync_engine, "before_cursor_execute", record_lock_query)
+
+    assert response.status_code == 204, response.text
+
+
+@pytest.mark.asyncio
 async def test_domain_create_and_update_return_the_canonical_dns_name(client, admin_token):
     """Admin responses must expose the same normalized tenant key routing uses."""
     created = await client.post(
@@ -90,7 +146,14 @@ async def test_domain_mutation_requires_admin_and_domain_validation_is_strict(
     assert denied.status_code == 403
     assert denied.json()["code"] == "PERMISSION_DENIED"
 
-    for invalid_name in ("https://example.test", "example.test/path", "example.test:8443", "example.test?q=1"):
+    for invalid_name in (
+        "https://example.test",
+        "example.test/path",
+        "example.test:8443",
+        "example.test?q=1",
+        "K.example",
+        " example.test",
+    ):
         invalid = await client.post(
             "/api/domains", headers=auth(admin_token), json={"name": invalid_name}
         )

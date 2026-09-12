@@ -19,10 +19,14 @@ _REFERER_PATTERN_RE = re.compile(
 
 
 def _validate_destination_url(value: str) -> str:
+    if value != value.strip() or any(character.isspace() for character in value):
+        raise ValueError("目标 URL 不能包含空白字符")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError("目标 URL 不能包含控制字符")
     try:
         parsed = urlsplit(value)
+        if not parsed.netloc.isascii():
+            raise ValueError
         hostname = parsed.hostname
         port = parsed.port
     except ValueError as exc:

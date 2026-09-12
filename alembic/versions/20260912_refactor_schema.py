@@ -1,16 +1,21 @@
-"""normalize the schema while preserving existing short-url data
+"""Normalize the schema while preserving existing short-url data.
+
+This approved migration is intentionally forward-only: reconstructing removed
+legacy policy/default structures would be destructive and is not a release
+requirement.  The legacy domain normalizer below is frozen with this revision,
+so a later application release cannot reinterpret data during an upgrade.
 
 Revision ID: 20260912_refactor
 Revises: a9e56b03bf5f
 """
 
 import json
+from ipaddress import ip_address
 
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from app.core.domain_name import normalize_dns_hostname
 from app.services.policy_migration import convert_legacy_policy
 
 
@@ -18,6 +23,36 @@ revision = "20260912_refactor"
 down_revision = "a9e56b03bf5f"
 branch_labels = None
 depends_on = None
+
+
+def _normalize_legacy_domain_name(value: str) -> str:
+    """Apply the DNS tenant rule shipped with this migration revision only."""
+    if not isinstance(value, str):
+        raise ValueError("域名必须是字符串")
+    if value != value.strip() or not value.isascii():
+        raise ValueError("域名必须是有效的 ASCII DNS 主机名")
+    hostname = value.lower()
+    if hostname.endswith("."):
+        hostname = hostname[:-1]
+    if not hostname or len(hostname) > 253:
+        raise ValueError("域名必须是有效的 ASCII DNS 主机名")
+    try:
+        ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("域名不能是 IP 地址")
+    labels = hostname.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or label[0] == "-"
+        or label[-1] == "-"
+        or not all(character.isalnum() or character == "-" for character in label)
+        for label in labels
+    ):
+        raise ValueError("域名必须是有效的 ASCII DNS 主机名")
+    return hostname
 
 
 def _preflight_and_copy_policies() -> None:
@@ -86,7 +121,7 @@ def _preflight_and_normalize_domains() -> None:
     by_name: dict[str, list[str]] = {}
     for row in rows:
         try:
-            normalized = normalize_dns_hostname(row["name"])
+            normalized = _normalize_legacy_domain_name(row["name"])
         except ValueError as exc:
             invalid.append(f"{row['id']}={row['name']!r} ({exc})")
             continue
@@ -298,4 +333,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Intentionally unavailable: this approved preservation migration is forward-only."""
     raise NotImplementedError("The data-preserving schema normalization is forward-only")

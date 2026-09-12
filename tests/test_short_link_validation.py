@@ -16,6 +16,10 @@ from app.schemas.short_link import DestinationWrite, LinkPolicyWrite
         "https://example.com:65536/path",
         "https://example.com/line\nbreak",
         "https://bad_name.example/path",
+        "https://K.example/path",
+        " https://example.com/path",
+        "https:// example.com/path",
+        "https://example.com /path",
     ],
 )
 def test_destination_write_rejects_non_http_or_invalid_authorities(url):
