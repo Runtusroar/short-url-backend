@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ErrorCode, NotFoundError
+from app.core.errors import APIError, ConflictError, ErrorCode, NotFoundError
 from app.core.security import get_password_hash
 from app.db.session import get_db
 from app.db.models import Domain, User, UserDomainAccess, UserRole
@@ -56,7 +56,11 @@ async def _user_response(
         is_active=user.is_active,
         created_at=user.created_at,
         updated_at=user.updated_at,
-        domain_access=domain_access if domain_access is not None else await _grants_for_user(db, user.id),
+        domain_access=(
+            []
+            if user.role == UserRole.ADMIN
+            else domain_access if domain_access is not None else await _grants_for_user(db, user.id)
+        ),
     )
 
 
@@ -94,10 +98,12 @@ async def list_users(
         select(User).order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     )
     users = result.scalars().all()
-    grants_by_user = await _grants_for_users(db, [user.id for user in users])
+    grants_by_user = await _grants_for_users(
+        db, [user.id for user in users if user.role != UserRole.ADMIN]
+    )
     return Page(
         items=[
-            await _user_response(db, user, domain_access=grants_by_user[user.id])
+            await _user_response(db, user, domain_access=grants_by_user.get(user.id, []))
             for user in users
         ],
         page=page,
@@ -114,9 +120,6 @@ async def create_user(
 ):
     await db.commit()
     async with db.begin():
-        existing = await db.scalar(select(User.id).where(User.username == payload.username))
-        if existing:
-            raise ConflictError("用户名已存在", ErrorCode.USERNAME_CONFLICT)
         await _require_domains(db, {grant.domain_id for grant in payload.domain_access})
 
         user = User(
@@ -127,12 +130,13 @@ async def create_user(
         )
         db.add(user)
         await db.flush()
-        for grant in payload.domain_access:
-            db.add(
-                UserDomainAccess(
-                    user_id=user.id, domain_id=grant.domain_id, access_level=grant.access_level
+        if user.role != UserRole.ADMIN:
+            for grant in payload.domain_access:
+                db.add(
+                    UserDomainAccess(
+                        user_id=user.id, domain_id=grant.domain_id, access_level=grant.access_level
+                    )
                 )
-            )
         await db.flush()
         response = await _user_response(db, user)
     return response
@@ -162,12 +166,21 @@ async def update_user(
             raise NotFoundError("用户")
         await _assert_not_last_active_admin(db, user, payload)
 
-        if payload.username is not None and payload.username != user.username:
-            existing = await db.scalar(
-                select(User.id).where(User.username == payload.username, User.id != user.id)
+        next_role = payload.role if payload.role is not None else user.role
+        if next_role == UserRole.ADMIN and payload.domain_access:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "管理员不能设置域名权限",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
-            if existing:
-                raise ConflictError("用户名已存在", ErrorCode.USERNAME_CONFLICT)
+        if user.role == UserRole.ADMIN and next_role == UserRole.SUBACCOUNT and payload.domain_access is None:
+            raise APIError(
+                ErrorCode.VALIDATION_ERROR,
+                "管理员降级为子账户时必须提交域名权限",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        if payload.username is not None and payload.username != user.username:
             user.username = payload.username
         if payload.password is not None:
             user.password_hash = get_password_hash(payload.password)
@@ -176,7 +189,9 @@ async def update_user(
         if payload.is_active is not None:
             user.is_active = payload.is_active
 
-        if payload.domain_access is not None:
+        if next_role == UserRole.ADMIN:
+            await db.execute(delete(UserDomainAccess).where(UserDomainAccess.user_id == user.id))
+        elif payload.domain_access is not None:
             await _require_domains(db, {grant.domain_id for grant in payload.domain_access})
             await db.execute(delete(UserDomainAccess).where(UserDomainAccess.user_id == user.id))
             for grant in payload.domain_access:

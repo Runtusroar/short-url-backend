@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.db.models import AccessLevel, UserRole
 
@@ -30,6 +30,12 @@ class UserWrite(BaseModel):
         if grants is not None and len({grant.domain_id for grant in grants}) != len(grants):
             raise ValueError("域名权限不能重复")
         return grants
+
+    @model_validator(mode="after")
+    def administrators_cannot_receive_domain_grants(self) -> "UserWrite":
+        if self.role == UserRole.ADMIN and self.domain_access:
+            raise ValueError("管理员不能设置域名权限")
+        return self
 
 
 class UserCreate(UserWrite):

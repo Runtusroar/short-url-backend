@@ -8,7 +8,7 @@ from sqlalchemy import event, func, select, update
 from app.api import users as users_api
 from app.core.errors import ConflictError
 from app.db import AsyncSessionLocal, engine
-from app.db.models import User, UserRole
+from app.db.models import User, UserDomainAccess, UserRole
 from app.schemas.user import UserUpdate
 
 
@@ -65,6 +65,68 @@ async def test_admin_can_create_list_update_and_deactivate_user_with_replaced_gr
 
 
 @pytest.mark.asyncio
+async def test_admin_creation_rejects_domain_grants(client, admin_token, domain_a):
+    """A global administrator cannot have a second, misleading grant-based scope."""
+    response = await client.post(
+        "/api/users",
+        headers=auth(admin_token),
+        json={
+            "username": f"admin-grant-{uuid.uuid4().hex[:10]}",
+            "password": "admin-pass",
+            "role": "admin",
+            "domain_access": [{"domain_id": str(domain_a.id), "access_level": "manage"}],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_role_changes_remove_admin_grants_and_rebuild_subaccount_grants(
+    client, admin_token, domain_a, domain_b
+):
+    """Role transitions must not leave authorization rows whose meaning changed."""
+    created = await client.post(
+        "/api/users",
+        headers=auth(admin_token),
+        json={
+            "username": f"role-change-{uuid.uuid4().hex[:10]}",
+            "password": "reader-pass",
+            "role": "subaccount",
+            "domain_access": [{"domain_id": str(domain_a.id), "access_level": "read"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    user_id = created.json()["id"]
+
+    promoted = await client.put(
+        f"/api/users/{user_id}", headers=auth(admin_token), json={"role": "admin"}
+    )
+    assert promoted.status_code == 200, promoted.text
+    assert promoted.json()["domain_access"] == []
+    async with AsyncSessionLocal() as session:
+        assert await session.scalar(
+            select(func.count())
+            .select_from(UserDomainAccess)
+            .where(UserDomainAccess.user_id == UUID(user_id))
+        ) == 0
+
+    demoted = await client.put(
+        f"/api/users/{user_id}",
+        headers=auth(admin_token),
+        json={
+            "role": "subaccount",
+            "domain_access": [{"domain_id": str(domain_b.id), "access_level": "manage"}],
+        },
+    )
+    assert demoted.status_code == 200, demoted.text
+    assert demoted.json()["domain_access"] == [
+        {"domain_id": str(domain_b.id), "access_level": "manage"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_user_update_without_password_keeps_existing_password(client, admin_token, domain_a):
     username = f"password-{uuid.uuid4().hex[:10]}"
     created = await client.post(
@@ -100,14 +162,28 @@ async def test_concurrent_usernames_return_a_named_conflict_and_leave_the_admin_
     """The unique index, not a racy preflight read, is authoritative for concurrent creates."""
     username = f"concurrent-{uuid.uuid4().hex[:12]}"
     payload = {"username": username, "password": "reader-pass", "role": "subaccount"}
-    first, second = await asyncio.gather(
-        client.post("/api/users", headers=auth(admin_token), json=payload),
-        client.post("/api/users", headers=auth(admin_token), json=payload),
-    )
+    statements: list[str] = []
+
+    def record_statement(_, __, statement, ___, ____, _____):
+        statements.append(statement.lower())
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        first, second = await asyncio.gather(
+            client.post("/api/users", headers=auth(admin_token), json=payload),
+            client.post("/api/users", headers=auth(admin_token), json=payload),
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
 
     assert sorted(response.status_code for response in (first, second)) == [201, 409]
     conflict = next(response for response in (first, second) if response.status_code == 409)
     assert conflict.json()["code"] == "USERNAME_CONFLICT"
+    assert sum("insert into users" in statement for statement in statements) == 2
+    assert not any(
+        "from users" in statement and "where users.username" in statement
+        for statement in statements
+    )
     still_authenticated = await client.get("/api/auth/me", headers=auth(admin_token))
     assert still_authenticated.status_code == 200
     assert still_authenticated.json()["username"] == "admin"
@@ -258,7 +334,9 @@ async def test_concurrent_admin_removals_leave_one_active_administrator(client, 
     try:
         results = await asyncio.gather(
             remove_admin(str(first_admin["id"]), {"is_active": False}),
-            remove_admin(str(second_admin["id"]), {"role": "subaccount"}),
+            remove_admin(
+                str(second_admin["id"]), {"role": "subaccount", "domain_access": []}
+            ),
         )
 
         assert sorted(results) == ["LAST_ADMIN_REQUIRED", "UPDATED"]

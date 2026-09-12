@@ -5,7 +5,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 from app.core.config import settings
 from scripts.backfill_user_agents import backfill_user_agents
@@ -450,31 +450,18 @@ def test_fresh_upgrade_creates_normalized_schema(monkeypatch):
             )
             assert {"user_domain_access", "link_policies", "ip_reputation"} <= tables
             assert {"user_domains", "access_rules", "short_link_permissions"}.isdisjoint(tables)
-            access_log_indexes = set(
-                connection.execute(
-                    text(
-                        """
-                        SELECT indexname FROM pg_indexes
-                        WHERE schemaname = :schema AND tablename = 'access_logs'
-                        """
-                    ),
-                    {"schema": schema},
-                ).scalars()
-            )
-            assert {
+            access_log_indexes = {
+                index["name"]
+                for index in inspect(connection).get_indexes("access_logs", schema=schema)
+            }
+            assert access_log_indexes == {
                 "ix_access_logs_accessed_at_id",
                 "ix_access_logs_domain_accessed_at_id",
                 "ix_access_logs_short_link_accessed_at_id",
                 "ix_access_logs_result_accessed_at",
                 "ix_access_logs_country_code_accessed_at",
                 "ix_access_logs_block_reason_accessed_at",
-            } <= access_log_indexes
-            assert {
-                "idx_access_logs_dedup",
-                "idx_access_logs_domain",
-                "idx_access_logs_plus8",
-                "idx_access_logs_short_link",
-            }.isdisjoint(access_log_indexes)
+            }
     finally:
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

@@ -1,7 +1,9 @@
 import pytest
+from types import SimpleNamespace
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.core.errors import register_exception_handlers
@@ -113,6 +115,26 @@ def test_http_error_envelope_preserves_protocol_headers():
     assert limited.headers["retry-after"] == "30"
     assert method_not_allowed.status_code == 405
     assert method_not_allowed.headers["allow"] == "GET"
+
+
+def test_unrelated_named_unique_constraint_keeps_the_generic_conflict_code():
+    """Only the three named public constraints receive specialized conflict codes."""
+    isolated = FastAPI()
+    register_exception_handlers(isolated)
+
+    @isolated.post("/unrelated-conflict")
+    async def unrelated_conflict():
+        raise IntegrityError(
+            "INSERT INTO unrelated",
+            {},
+            SimpleNamespace(diag=SimpleNamespace(constraint_name="unrelated_unique_key")),
+        )
+
+    with TestClient(isolated, raise_server_exceptions=False) as client:
+        response = client.post("/unrelated-conflict")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "CONFLICT"
 
 
 def test_unhandled_exception_logs_a_traceback_but_keeps_the_stable_error_envelope(caplog):

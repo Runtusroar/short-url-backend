@@ -1,11 +1,10 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import cast, func, select
-from sqlalchemy.dialects.postgresql import INET
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ErrorCode, NotFoundError
+from app.core.errors import NotFoundError
 from app.db.session import get_db
 from app.db.models import IpBlacklist, User
 from app.dependencies import require_admin
@@ -68,11 +67,6 @@ async def create_ip_blacklist_entry(
 ):
     await db.commit()
     async with db.begin():
-        existing = await db.scalar(
-            select(IpBlacklist.id).where(IpBlacklist.ip == cast(payload.ip, INET))
-        )
-        if existing:
-            raise ConflictError("该 IP 已在黑名单中", ErrorCode.IP_BLACKLIST_CONFLICT)
         entry = IpBlacklist(ip=payload.ip, reason=payload.reason, created_by=current_user.id)
         db.add(entry)
         await db.flush()
@@ -93,13 +87,6 @@ async def update_ip_blacklist_entry(
         if not entry:
             raise NotFoundError("黑名单记录")
         if payload.ip is not None and payload.ip != str(entry.ip):
-            existing = await db.scalar(
-                select(IpBlacklist.id).where(
-                    IpBlacklist.ip == cast(payload.ip, INET), IpBlacklist.id != entry.id
-                )
-            )
-            if existing:
-                raise ConflictError("该 IP 已在黑名单中", ErrorCode.IP_BLACKLIST_CONFLICT)
             entry.ip = payload.ip
         if "reason" in payload.model_fields_set:
             entry.reason = payload.reason

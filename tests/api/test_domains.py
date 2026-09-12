@@ -126,14 +126,28 @@ async def test_domain_create_and_update_return_the_canonical_dns_name(client, ad
 async def test_concurrent_domain_names_return_a_named_conflict(client, admin_token):
     """Concurrent writes must classify PostgreSQL's named unique violation, not leak a generic conflict."""
     payload = {"name": f"{uuid.uuid4().hex[:16]}.concurrent.test"}
-    first, second = await asyncio.gather(
-        client.post("/api/domains", headers=auth(admin_token), json=payload),
-        client.post("/api/domains", headers=auth(admin_token), json=payload),
-    )
+    statements: list[str] = []
+
+    def record_statement(_, __, statement, ___, ____, _____):
+        statements.append(statement.lower())
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        first, second = await asyncio.gather(
+            client.post("/api/domains", headers=auth(admin_token), json=payload),
+            client.post("/api/domains", headers=auth(admin_token), json=payload),
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
 
     assert sorted(response.status_code for response in (first, second)) == [201, 409]
     conflict = next(response for response in (first, second) if response.status_code == 409)
     assert conflict.json()["code"] == "DOMAIN_CONFLICT"
+    assert sum("insert into domains" in statement for statement in statements) == 2
+    assert not any(
+        "from domains" in statement and "where domains.name" in statement
+        for statement in statements
+    )
 
 
 @pytest.mark.asyncio

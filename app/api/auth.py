@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.core.errors import PermissionDeniedError, UnauthorizedError
 from app.core.security import create_access_token, verify_password
 from app.db.session import get_db
-from app.db.models import User, UserDomainAccess
+from app.db.models import User, UserDomainAccess, UserRole
 from app.dependencies import client_ip_identifier, get_current_user, rate_limit
 from app.schemas.auth import Token
 from app.schemas.user import DomainGrantResponse, UserResponse
@@ -75,6 +75,17 @@ async def me(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if current_user.role == UserRole.ADMIN:
+        return UserResponse(
+            id=current_user.id,
+            username=current_user.username,
+            role=current_user.role,
+            is_active=current_user.is_active,
+            created_at=current_user.created_at,
+            updated_at=current_user.updated_at,
+            domain_access=[],
+        )
+
     result = await db.execute(
         select(UserDomainAccess)
         .where(UserDomainAccess.user_id == current_user.id)
@@ -87,7 +98,6 @@ async def me(
         is_active=current_user.is_active,
         created_at=current_user.created_at,
         updated_at=current_user.updated_at,
-        # Administrators intentionally have no grant rows: their role grants every domain.
         domain_access=[
             DomainGrantResponse(domain_id=grant.domain_id, access_level=grant.access_level)
             for grant in result.scalars()

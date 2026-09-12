@@ -1,9 +1,10 @@
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.db.models import User
+from app.db import engine
+from app.db.models import User, UserDomainAccess
 from app.db.session import AsyncSessionLocal
 
 
@@ -71,6 +72,34 @@ async def test_me_returns_the_current_subaccount_grants_and_an_explicit_empty_ad
         {"domain_id": str(domain_a.id), "access_level": "read"}
     ]
     assert admin.json()["domain_access"] == []
+
+
+async def test_me_admin_ignores_residual_grants_without_querying_the_grant_table(
+    client, admin_token, domain_a
+):
+    """A historical bad grant must neither leak through nor add an unnecessary /me query."""
+    async with AsyncSessionLocal() as session:
+        admin = await session.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        session.add(
+            UserDomainAccess(user_id=admin.id, domain_id=domain_a.id, access_level="manage")
+        )
+        await session.commit()
+
+    statements: list[str] = []
+
+    def record_statement(_, __, statement, ___, ____, _____):
+        statements.append(statement.lower())
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        response = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {admin_token}"})
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["domain_access"] == []
+    assert not any("user_domain_access" in statement for statement in statements)
 
 
 async def test_login_rejects_wrong_password(client):

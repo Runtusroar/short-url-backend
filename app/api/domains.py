@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ErrorCode, NotFoundError
+from app.core.errors import NotFoundError
 from app.db.session import get_db
 from app.db.models import Domain, User, UserDomainAccess, UserRole
 from app.dependencies import get_current_user, require_admin
@@ -50,9 +50,6 @@ async def create_domain(
 ):
     await db.commit()
     async with db.begin():
-        existing = await db.scalar(select(Domain.id).where(Domain.name == payload.name))
-        if existing:
-            raise ConflictError("域名已存在", ErrorCode.DOMAIN_CONFLICT)
         domain = Domain(name=payload.name, is_active=payload.is_active)
         db.add(domain)
         await db.flush()
@@ -72,11 +69,6 @@ async def update_domain(
         if not domain:
             raise NotFoundError("域名")
         if payload.name is not None and payload.name != domain.name:
-            existing = await db.scalar(
-                select(Domain.id).where(Domain.name == payload.name, Domain.id != domain.id)
-            )
-            if existing:
-                raise ConflictError("域名已存在", ErrorCode.DOMAIN_CONFLICT)
             domain.name = payload.name
         if payload.is_active is not None:
             domain.is_active = payload.is_active
