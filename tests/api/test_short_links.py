@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from asyncpg.exceptions import UniqueViolationError
+from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_dbapi
 from sqlalchemy.exc import IntegrityError
 
 from app.api import short_links as short_links_api
@@ -428,6 +429,15 @@ def _asyncpg_unique_violation(constraint_name: str) -> UniqueViolationError:
     return error
 
 
+def _adapted_asyncpg_unique_violation(
+    constraint_name: str, *, chain_attribute: str = "__cause__"
+) -> BaseException:
+    driver_error = _asyncpg_unique_violation(constraint_name)
+    adapted_error = AsyncAdapt_asyncpg_dbapi.IntegrityError("duplicate key value")
+    setattr(adapted_error, chain_attribute, driver_error)
+    return adapted_error
+
+
 @pytest.mark.parametrize(
     ("driver_error", "expected"),
     [
@@ -445,6 +455,23 @@ def _asyncpg_unique_violation(constraint_name: str) -> UniqueViolationError:
             _asyncpg_unique_violation("target_urls_url_key"),
             False,
             id="asyncpg-unrelated-constraint",
+        ),
+        pytest.param(
+            _adapted_asyncpg_unique_violation("uq_domain_short_code"),
+            True,
+            id="sqlalchemy-asyncpg-adapted-cause",
+        ),
+        pytest.param(
+            _adapted_asyncpg_unique_violation(
+                "uq_domain_short_code", chain_attribute="__context__"
+            ),
+            True,
+            id="sqlalchemy-asyncpg-adapted-context",
+        ),
+        pytest.param(
+            _adapted_asyncpg_unique_violation("target_urls_url_key"),
+            False,
+            id="sqlalchemy-asyncpg-adapted-unrelated",
         ),
     ],
 )
@@ -490,6 +517,31 @@ async def test_asyncpg_alias_constraint_returns_the_public_short_code_conflict(
         "/api/short-links",
         headers=auth(operator_token),
         json=aggregate_payload(str(domain_a.id), custom_alias="AsyncpgConflictA"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "SHORT_CODE_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_adapted_asyncpg_alias_constraint_returns_the_public_short_code_conflict(
+    client, operator_token, domain_a, monkeypatch
+):
+    """SQLAlchemy's asyncpg adapter keeps the server diagnostic in its exception chain."""
+
+    async def fail_with_adapted_asyncpg_alias_constraint(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT INTO short_links",
+            {},
+            _adapted_asyncpg_unique_violation("uq_domain_short_code"),
+        )
+
+    monkeypatch.setattr(short_links_api, "_replace_destinations", fail_with_adapted_asyncpg_alias_constraint)
+
+    response = await client.post(
+        "/api/short-links",
+        headers=auth(operator_token),
+        json=aggregate_payload(str(domain_a.id), custom_alias="AdaptedAsyncpgConflictA"),
     )
 
     assert response.status_code == 409

@@ -8,13 +8,6 @@ from app.core.errors import register_exception_handlers
 from app.main import app, lifespan
 
 
-def test_health():
-    with TestClient(app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
-
-
 def test_blank_maxmind_settings_are_none(monkeypatch):
     """Blank Compose substitutions must not make optional credentials invalid."""
     monkeypatch.setenv("MAXMIND_ACCOUNT_ID", "")

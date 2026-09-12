@@ -1,4 +1,5 @@
 from collections import Counter
+from importlib import import_module
 from uuid import uuid4
 
 import pytest
@@ -40,11 +41,11 @@ BUSINESS_ROUTE_COVERAGE = set(BUSINESS_ROUTES)
 # This matrix is deliberately explicit: one test name per business route prevents a
 # router from becoming an untested, implicitly registered public API.
 ROUTE_COVERAGE = {
-    ("GET", "/health"): ("tests/test_main.py::test_health",),
-    ("POST", "/api/auth/login"): ("tests/test_auth.py::test_login_rejects_wrong_password",),
-    ("POST", "/api/auth/login-cookie"): ("tests/test_auth.py::test_login_cookie_uses_configured_security_attributes",),
-    ("POST", "/api/auth/logout"): ("tests/test_auth.py::test_logout_succeeds_and_clears_cookie",),
-    ("GET", "/api/auth/me"): ("tests/test_auth.py::test_me_returns_the_authenticated_user",),
+    ("GET", "/health"): ("tests/api/test_route_contract.py::test_health_returns_service_status",),
+    ("POST", "/api/auth/login"): ("tests/api/test_auth.py::test_login_rejects_wrong_password",),
+    ("POST", "/api/auth/login-cookie"): ("tests/api/test_auth.py::test_login_cookie_uses_configured_security_attributes",),
+    ("POST", "/api/auth/logout"): ("tests/api/test_auth.py::test_logout_succeeds_and_clears_cookie",),
+    ("GET", "/api/auth/me"): ("tests/api/test_auth.py::test_me_returns_the_authenticated_user",),
     ("GET", "/api/users"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
     ("POST", "/api/users"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
     ("PUT", "/api/users/{user_id}"): ("tests/api/test_users.py::test_admin_can_create_list_update_and_deactivate_user_with_replaced_grants",),
@@ -77,6 +78,14 @@ def _registered_business_routes() -> list[tuple[str, str]]:
     ]
 
 
+@pytest.mark.asyncio
+async def test_health_returns_service_status(client):
+    response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_no_legacy_api_routes_and_final_routes_are_registered_once():
     """Only the final business API may be registered, exactly once, in its public order."""
     routes = _registered_business_routes()
@@ -93,7 +102,12 @@ def test_route_coverage_matrix_matches_the_exact_business_route_contract():
 
 @pytest.mark.parametrize("route", sorted(BUSINESS_ROUTE_COVERAGE))
 def test_every_registered_business_route_has_an_explicit_coverage_mapping(route):
-    assert ROUTE_COVERAGE[route]
+    for node_id in ROUTE_COVERAGE[route]:
+        path, separator, test_name = node_id.partition("::")
+        assert path.startswith("tests/api/")
+        assert separator == "::"
+        module = import_module(path.removesuffix(".py").replace("/", "."))
+        assert callable(getattr(module, test_name, None))
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 logger = logging.getLogger(__name__)
+_MAX_INTEGRITY_DIAGNOSTIC_CHAIN_DEPTH = 4
 
 
 class ErrorCode(StrEnum):
@@ -75,12 +76,22 @@ def integrity_constraint_name(exc: IntegrityError) -> str | None:
     psycopg exposes the name on ``orig.diag`` while asyncpg exposes it directly
     on the exception.  Both are structured diagnostics supplied by PostgreSQL.
     """
-    orig = getattr(exc, "orig", None)
-    diagnostic = getattr(orig, "diag", None)
-    for source in (diagnostic, orig):
-        constraint_name = getattr(source, "constraint_name", None)
-        if isinstance(constraint_name, str) and constraint_name:
-            return constraint_name
+    pending = [getattr(exc, "orig", None)]
+    inspected: set[int] = set()
+    while pending and len(inspected) < _MAX_INTEGRITY_DIAGNOSTIC_CHAIN_DEPTH:
+        error = pending.pop(0)
+        if error is None or id(error) in inspected:
+            continue
+        inspected.add(id(error))
+        diagnostic = getattr(error, "diag", None)
+        for source in (diagnostic, error):
+            constraint_name = getattr(source, "constraint_name", None)
+            if isinstance(constraint_name, str) and constraint_name:
+                return constraint_name
+        for attribute in ("__cause__", "__context__"):
+            related = getattr(error, attribute, None)
+            if isinstance(related, BaseException):
+                pending.append(related)
     return None
 
 
