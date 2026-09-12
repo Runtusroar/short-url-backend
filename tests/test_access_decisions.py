@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.services.access as access
 from app.db.models import AccessResult, BlockReason
 from app.services.access import AccessContext, decide_access, evaluate_access, target_error_decision
 from app.services.proxy import ProxyResult
@@ -170,6 +171,33 @@ def test_referer_policy_modes_report_the_matched_host(mode, patterns, referer, d
         BlockReason.REFERER,
         detail,
     )
+
+
+def test_referer_mode_off_does_not_parse_an_untrusted_referer(monkeypatch):
+    """Parsing a disabled Referer policy lets malformed optional headers break redirects."""
+    monkeypatch.setattr(access, "urlparse", lambda _value: (_ for _ in ()).throw(AssertionError("must not parse")))
+
+    decision = evaluate_access(policy(referer_mode="off"), context(referer="http://[malformed"), False)
+
+    assert (decision.result, decision.block_reason, decision.block_detail) == (AccessResult.ALLOWED, None, None)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_reason", "expected_detail"),
+    [
+        ("allow", BlockReason.REFERER, "Referer 缺失 不在允许列表"),
+        ("block", None, None),
+    ],
+)
+def test_malformed_referer_is_treated_as_missing_and_never_raises(mode, expected_reason, expected_detail):
+    """A urlparse ValueError must become a normal policy decision, not a route 500."""
+    decision = evaluate_access(
+        policy(referer_mode=mode, referer_patterns=["partner.example"]),
+        context(referer="http://[malformed"),
+        False,
+    )
+
+    assert (decision.block_reason, decision.block_detail) == (expected_reason, expected_detail)
 
 
 def test_allowed_decision_has_no_block_metadata():

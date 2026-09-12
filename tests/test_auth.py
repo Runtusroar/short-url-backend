@@ -74,6 +74,7 @@ async def test_authenticated_rate_limit_identifier_uses_the_same_user_for_bearer
     assert await dependencies.user_identifier(_request(headers=headers)) == f"user:{user_id}"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("trusted", "headers", "client", "expected"),
     [
@@ -100,9 +101,9 @@ async def test_authenticated_rate_limit_identifier_uses_the_same_user_for_bearer
         (False, {}, None, "unknown"),
     ],
 )
-def test_redirect_rate_identifier_reuses_canonical_trusted_client_ip_semantics(
+async def test_redirect_rate_identifier_reuses_canonical_trusted_client_ip_semantics(
     monkeypatch, trusted, headers, client, expected
 ):
     monkeypatch.setattr(settings, "trust_proxy_headers", trusted)
 
-    assert dependencies.client_ip_identifier(_request(headers=headers, client=client)) == expected
+    assert await dependencies.client_ip_identifier(_request(headers=headers, client=client)) == expected

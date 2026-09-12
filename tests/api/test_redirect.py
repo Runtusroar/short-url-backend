@@ -144,6 +144,36 @@ async def test_redirect_ignores_spoofed_forwarding_when_proxy_trust_is_disabled(
 
 
 @pytest.mark.asyncio
+async def test_redirect_releases_its_request_transaction_before_proxy_resolution(client, monkeypatch):
+    """Holding the route session across MaxMind makes a slow provider exhaust DB connections."""
+    import app.api.redirect as redirect_api
+    from app.db.models import AccessResult
+    from app.services.access import AccessDecision
+
+    domain, _ = await _make_redirect_link(host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True})
+    resolve_domain = redirect_api._resolve_domain
+    route_session = None
+
+    async def capture_route_session(db, request):
+        nonlocal route_session
+        route_session = db
+        return await resolve_domain(db, request)
+
+    async def verify_released_transaction(*_args, **_kwargs):
+        assert route_session is not None
+        assert route_session.in_transaction() is False
+        return AccessDecision(AccessResult.ALLOWED)
+
+    monkeypatch.setattr(redirect_api, "_resolve_domain", capture_route_session)
+    monkeypatch.setattr(redirect_api, "decide_access", verify_released_transaction)
+
+    response = await client.get("/CampaignA", headers={"Host": domain.name}, follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://allowed.example/landing"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("policy", "headers", "country", "blacklisted_ip", "reason"),
     [
@@ -177,6 +207,30 @@ async def test_each_access_block_reason_selects_the_blocked_target(
     assert log is not None
     assert log.result == "blocked"
     assert log.block_reason == reason
+
+
+@pytest.mark.asyncio
+async def test_malformed_referer_is_logged_as_a_structured_referer_decision(client):
+    """A malformed optional Referer must be handled as a missing allowlist value, not as a 500."""
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example",
+        policy={"referer_mode": "allow", "referer_patterns": ["partner.example"]},
+    )
+
+    response = await client.get(
+        "/CampaignA",
+        headers={"Host": domain.name, "Referer": "http://[malformed"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://blocked.example/landing"
+    log = await _latest_log(link.id)
+    assert (log.result, log.block_reason, log.block_detail) == (
+        "blocked",
+        "referer",
+        "Referer 缺失 不在允许列表",
+    )
 
 
 @pytest.mark.asyncio
@@ -363,6 +417,53 @@ async def test_non_bot_proxy_provider_failure_fails_open_and_is_not_persisted(cl
     assert provider.calls == [(ip, 1.5)]
     assert await _reputation(ip) is None
     assert (await _latest_log(link.id)).result == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_proxy_cache_write_failure_is_logged_without_changing_a_valid_redirect(client, monkeypatch, caplog):
+    """A cache insert failure must not turn a valid provider response into a failed redirect."""
+    domain, link = await _make_redirect_link(
+        host=f"{uuid.uuid4().hex}.example", policy={"block_proxy": True}
+    )
+    provider = Provider(response={"is_proxy": False, "proxy_type": None})
+
+    class FailingCacheSession:
+        rolled_back = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def scalar(self, _statement):
+            return None
+
+        async def execute(self, _statement):
+            return None
+
+        async def commit(self):
+            raise SQLAlchemyError("cache unavailable")
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    failing_cache = FailingCacheSession()
+    monkeypatch.setattr("app.services.request_metadata.settings.trust_proxy_headers", True)
+    monkeypatch.setattr("app.api.redirect.get_proxy_provider", lambda: provider)
+    monkeypatch.setattr("app.services.proxy.AsyncSessionLocal", lambda: failing_cache)
+
+    response = await client.get(
+        "/CampaignA",
+        headers={"Host": domain.name, "X-Real-IP": "203.0.113.213"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://allowed.example/landing"
+    assert (await _latest_log(link.id)).result == "allowed"
+    assert failing_cache.rolled_back is True
+    assert "cache write failed" in caplog.text
 
 
 @pytest.mark.asyncio

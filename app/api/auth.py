@@ -8,7 +8,7 @@ from app.core.errors import PermissionDeniedError, UnauthorizedError
 from app.core.security import create_access_token, verify_password
 from app.db.session import get_db
 from app.db.models import User
-from app.dependencies import get_current_user, rate_limit
+from app.dependencies import client_ip_identifier, get_current_user, rate_limit
 from app.schemas.auth import Token
 from app.schemas.user import UserResponse
 
@@ -19,7 +19,11 @@ def _issue_token(user: User) -> str:
     return create_access_token({"sub": str(user.id)})
 
 
-@router.post("/login", response_model=Token, dependencies=[rate_limit(times=60, seconds=60)])
+@router.post(
+    "/login",
+    response_model=Token,
+    dependencies=[rate_limit(times=60, seconds=60, identifier=client_ip_identifier)],
+)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
@@ -35,7 +39,7 @@ async def login(
 @router.post(
     "/login-cookie",
     response_model=UserResponse,
-    dependencies=[rate_limit(times=60, seconds=60)],
+    dependencies=[rate_limit(times=60, seconds=60, identifier=client_ip_identifier)],
 )
 async def login_cookie(
     response: Response,

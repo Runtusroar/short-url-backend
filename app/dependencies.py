@@ -17,7 +17,7 @@ async def _noop_rate_limit():
     return None
 
 
-def client_ip_identifier(request: Request) -> str:
+async def client_ip_identifier(request: Request) -> str:
     return request_client_ip(request) or "unknown"
 
 
@@ -37,7 +37,7 @@ async def user_identifier(request: Request) -> str:
             return f"user:{user_id}"
         except Exception:
             pass
-    return client_ip_identifier(request)
+    return await client_ip_identifier(request)
 
 
 def rate_limit(times: int, seconds: int, identifier=None):

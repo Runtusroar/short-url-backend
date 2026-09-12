@@ -6,15 +6,18 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from ipaddress import ip_address
 from typing import Any, Protocol
 
 from geoip2.webservice import AsyncClient as MaxMindAsyncClient
 from sqlalchemy import cast, select
-from sqlalchemy.dialects.postgresql import INET
+from sqlalchemy.dialects.postgresql import INET, insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import IpReputation
+from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,15 @@ def _clock_value(now: datetime | Callable[[], datetime]) -> datetime:
     return now() if callable(now) else now
 
 
+def _normalized_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 def _field(value: object, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
@@ -140,8 +152,8 @@ def _normalize_provider_response(response: object) -> tuple[bool, str | None]:
 
 
 async def get_proxy_result(
-    db: AsyncSession,
-    ip: str,
+    db: AsyncSession | None,
+    ip: str | None,
     client: ProxyClient,
     now: datetime | Callable[[], datetime],
 ) -> ProxyResult | None:
@@ -151,38 +163,64 @@ async def get_proxy_result(
     failure never creates a negative reputation entry because unknown traffic
     must fail open instead of becoming a durable classification.
     """
+    normalized_ip = _normalized_ip(ip)
+    if normalized_ip is None:
+        return None
+
     checked_at = _clock_value(now)
-    cached = await db.scalar(
-        select(IpReputation).where(
-            IpReputation.ip == cast(ip, INET),
-            IpReputation.expires_at > checked_at,
-        )
+    cache_query = select(IpReputation).where(
+        IpReputation.ip == cast(normalized_ip, INET),
+        IpReputation.expires_at > checked_at,
     )
+    try:
+        if db is not None:
+            cached = await db.scalar(cache_query)
+        else:
+            async with AsyncSessionLocal() as cache_session:
+                cached = await cache_session.scalar(cache_query)
+    except SQLAlchemyError as exc:
+        logger.warning("proxy reputation cache read failed for %s: %s", normalized_ip, exc)
+        cached = None
     if cached is not None:
         return ProxyResult(cached.is_proxy, cached.proxy_type, "cache")
 
     try:
-        response = await client.lookup(ip, timeout=settings.maxmind_timeout_seconds)
+        response = await client.lookup(normalized_ip, timeout=settings.maxmind_timeout_seconds)
         is_proxy, proxy_type = _normalize_provider_response(response)
     except asyncio.CancelledError:
         raise
     except (TimeoutError, asyncio.TimeoutError, InsufficientBalanceError, ProxyProviderError, OSError) as exc:
-        logger.warning("proxy reputation lookup failed for %s: %s", ip, exc)
+        logger.warning("proxy reputation lookup failed for %s: %s", normalized_ip, exc)
         return None
     except Exception as exc:
         # The provider is an injected external boundary; its undocumented
         # service errors must be treated as unknown and never cached.
-        logger.warning("proxy reputation provider failed for %s: %s", ip, exc)
+        logger.warning("proxy reputation provider failed for %s: %s", normalized_ip, exc)
         return None
 
-    await db.merge(
-        IpReputation(
-            ip=ip,
-            is_proxy=is_proxy,
-            proxy_type=proxy_type,
-            checked_at=checked_at,
-            expires_at=checked_at + timedelta(hours=settings.ip_reputation_ttl_hours),
-        )
+    reputation_values = {
+        "ip": normalized_ip,
+        "is_proxy": is_proxy,
+        "proxy_type": proxy_type,
+        "checked_at": checked_at,
+        "expires_at": checked_at + timedelta(hours=settings.ip_reputation_ttl_hours),
+    }
+    cache_write = insert(IpReputation).values(**reputation_values).on_conflict_do_update(
+        index_elements=[IpReputation.ip],
+        set_=reputation_values,
     )
-    await db.commit()
+    cache_session: AsyncSession | None = None
+    try:
+        if db is not None:
+            cache_session = db
+            await cache_session.execute(cache_write)
+            await cache_session.commit()
+        else:
+            async with AsyncSessionLocal() as cache_session:
+                await cache_session.execute(cache_write)
+                await cache_session.commit()
+    except SQLAlchemyError as exc:
+        if cache_session is not None:
+            await cache_session.rollback()
+        logger.warning("proxy reputation cache write failed for %s: %s", normalized_ip, exc)
     return ProxyResult(is_proxy, proxy_type, "maxmind")

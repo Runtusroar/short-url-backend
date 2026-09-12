@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class AccessContext:
-    ip: str
+    ip: str | None
     country: str | None
     ua: ParsedUserAgent | None
     referer: str | None
@@ -55,7 +55,10 @@ def _bot_name(ua: ParsedUserAgent | None) -> str:
 def _referer_host(referer: str | None) -> str | None:
     if not referer:
         return None
-    hostname = urlparse(referer).hostname
+    try:
+        hostname = urlparse(referer).hostname
+    except ValueError:
+        return None
     return hostname.lower().rstrip(".") if hostname else None
 
 
@@ -122,15 +125,16 @@ def evaluate_access(
     if platform_mode == "block" and platform.lower() in platforms:
         return _blocked(BlockReason.PLATFORM, f"平台 {platform} 命中阻止列表")
 
-    host = _referer_host(context.referer)
-    display_host = host or "缺失"
-    patterns = _values(policy, "referer_patterns")
-    matches_referer = _referer_matches(host, patterns)
     referer_mode = _mode(policy, "referer_mode")
-    if referer_mode == "allow" and not matches_referer:
-        return _blocked(BlockReason.REFERER, f"Referer {display_host} 不在允许列表")
-    if referer_mode == "block" and matches_referer:
-        return _blocked(BlockReason.REFERER, f"Referer {display_host} 命中阻止列表")
+    if referer_mode != "off":
+        host = _referer_host(context.referer)
+        display_host = host or "缺失"
+        patterns = _values(policy, "referer_patterns")
+        matches_referer = _referer_matches(host, patterns)
+        if referer_mode == "allow" and not matches_referer:
+            return _blocked(BlockReason.REFERER, f"Referer {display_host} 不在允许列表")
+        if referer_mode == "block" and matches_referer:
+            return _blocked(BlockReason.REFERER, f"Referer {display_host} 命中阻止列表")
 
     return AccessDecision(AccessResult.ALLOWED)
 
@@ -141,7 +145,6 @@ async def decide_access(
     *,
     blacklisted: bool | str | "IpBlacklist" = False,
     provider: ProxyClient | None = None,
-    db: AsyncSession | None = None,
     now: datetime | Callable[[], datetime] | None = None,
 ) -> AccessDecision:
     """Resolve optional proxy intelligence without violating decision order."""
@@ -151,10 +154,10 @@ async def decide_access(
     if (
         _policy_value(policy, "block_proxy", False)
         and provider is not None
-        and db is not None
+        and context.ip is not None
         and now is not None
     ):
-        proxy = await get_proxy_result(db, context.ip, provider, now)
+        proxy = await get_proxy_result(None, context.ip, provider, now)
         return evaluate_access(policy, replace(context, proxy=proxy), blacklisted)
     return preliminary
 

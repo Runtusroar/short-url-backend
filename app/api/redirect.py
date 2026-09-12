@@ -22,6 +22,17 @@ from app.services.proxy import get_proxy_provider
 
 router = APIRouter(tags=["redirect"])
 
+_POLICY_FIELDS = (
+    "country_mode",
+    "countries",
+    "platform_mode",
+    "platforms",
+    "referer_mode",
+    "referer_patterns",
+    "block_proxy",
+    "block_bot",
+)
+
 
 async def _resolve_domain(db: AsyncSession, request: Request) -> Domain:
     host = request_host(request)
@@ -81,6 +92,13 @@ def _snapshot(
     )
 
 
+def _policy_snapshot(policy) -> SimpleNamespace:
+    """Detach policy values before a paid lookup releases the request transaction."""
+    if policy is None:
+        return SimpleNamespace()
+    return SimpleNamespace(**{field: getattr(policy, field) for field in _POLICY_FIELDS})
+
+
 @router.get("/{short_code}")
 async def redirect(short_code: str, request: Request, db: AsyncSession = Depends(get_db)) -> Response:
     metadata = extract_request_metadata(request)
@@ -97,27 +115,47 @@ async def redirect(short_code: str, request: Request, db: AsyncSession = Depends
     if link is None:
         raise NotFoundError("短链")
 
+    blacklisted = await _blacklist_entry(db, metadata.ip)
+    domain_snapshot = SimpleNamespace(id=domain.id, name=domain.name)
+    link_snapshot = SimpleNamespace(id=link.id, short_code=link.short_code, note=link.note)
+    target_snapshots = [
+        SimpleNamespace(
+            id=target.id,
+            url=target.url,
+            url_type=target.url_type,
+            weight=target.weight,
+            is_active=target.is_active,
+        )
+        for target in link.target_urls
+    ]
+    policy_snapshot = _policy_snapshot(link.policy)
+    blacklist_snapshot = blacklisted.reason if blacklisted and blacklisted.reason else bool(blacklisted)
+
+    # All route-owned reads are complete.  Do not keep this transaction open
+    # while MaxMind waits on the network; its cache opens its own short-lived
+    # sessions before and after the provider call.
+    await db.rollback()
+
     decision = await decide_access(
-        link.policy or SimpleNamespace(),
+        policy_snapshot,
         AccessContext(
-            ip=metadata.ip or "unknown",
+            ip=metadata.ip,
             country=metadata.country,
             ua=metadata.ua,
             referer=metadata.referer,
         ),
-        blacklisted=await _blacklist_entry(db, metadata.ip) or False,
+        blacklisted=blacklist_snapshot,
         provider=get_proxy_provider(),
-        db=db,
         now=datetime.now(timezone.utc),
     )
-    target = choose_target(link.target_urls, decision.result)
+    target = choose_target(target_snapshots, decision.result)
     if target is None:
         target_kind = "允许" if decision.result == AccessResult.ALLOWED else "阻止"
         decision = target_error_decision(target_kind)
 
     await write_access_log(
         AsyncSessionLocal,
-        _snapshot(domain=domain, link=link, metadata=metadata, decision=decision, target=target),
+        _snapshot(domain=domain_snapshot, link=link_snapshot, metadata=metadata, decision=decision, target=target),
     )
 
     if target is None:

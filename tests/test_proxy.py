@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -153,6 +154,53 @@ async def test_provider_failures_fail_open_without_persisting_reputation(db, err
 
     assert result is None
     assert await db.scalar(select(IpReputation).where(IpReputation.ip == cast(ip, INET))) is None
+
+
+async def test_invalid_ip_skips_the_provider_and_does_not_cast_a_placeholder_to_inet():
+    """Passing the redirect's former 'unknown' placeholder to INET raises before fail-open can apply."""
+    provider = Provider(response={"is_proxy": True})
+
+    result = await get_proxy_result(None, "unknown", provider, datetime.now(timezone.utc))
+
+    assert result is None
+    assert provider.calls == []
+
+
+async def test_concurrent_same_ip_cache_misses_use_an_atomic_upsert():
+    """Two simultaneous fresh lookups must not make one redirect fail on the cache primary key."""
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    ip = "203.0.113.214"
+    ready = asyncio.Event()
+    started = 0
+
+    class ConcurrentProvider(Provider):
+        async def lookup(self, lookup_ip: str, *, timeout: float):
+            nonlocal started
+            self.calls.append((lookup_ip, timeout))
+            started += 1
+            if started == 2:
+                ready.set()
+            await ready.wait()
+            return self.response
+
+    first = ConcurrentProvider(response={"is_proxy": False, "proxy_type": None})
+    second = ConcurrentProvider(response={"is_proxy": False, "proxy_type": None})
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await session.commit()
+
+    results = await asyncio.gather(
+        get_proxy_result(None, ip, first, now),
+        get_proxy_result(None, ip, second, now),
+    )
+
+    assert [(result.is_proxy, result.source) for result in results] == [(False, "maxmind"), (False, "maxmind")]
+    async with AsyncSessionLocal() as session:
+        rows = (await session.scalars(select(IpReputation).where(IpReputation.ip == cast(ip, INET)))).all()
+        assert len(rows) == 1
+        assert rows[0].is_proxy is False
+        await session.execute(delete(IpReputation).where(IpReputation.ip == cast(ip, INET)))
+        await session.commit()
 
 
 @pytest.mark.parametrize(
