@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import PermissionDeniedError, UnauthorizedError
 from app.core.security import create_access_token, verify_password
-from app.database import get_db
+from app.db.session import get_db
 from app.db.models import User
 from app.dependencies import get_current_user, rate_limit
 from app.schemas.auth import Token

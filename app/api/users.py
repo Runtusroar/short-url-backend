@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, ErrorCode, NotFoundError
 from app.core.security import get_password_hash
-from app.database import get_db
+from app.db.session import get_db
 from app.db.models import Domain, User, UserDomainAccess, UserRole
 from app.dependencies import require_admin
 from app.schemas.common import Page

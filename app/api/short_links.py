@@ -6,8 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import ConflictError, ErrorCode, NotFoundError
-from app.database import get_db
+from app.core.errors import ConflictError, ErrorCode, NotFoundError, integrity_constraint_name
+from app.db.session import get_db
 from app.db.models import AccessLevel, LinkPolicy, ShortLink, TargetUrl, User
 from app.dependencies import get_current_user
 from app.schemas.common import Page
@@ -27,8 +27,7 @@ router = APIRouter(prefix="/api/short-links", tags=["short-links"])
 
 def _is_short_code_unique_violation(exc: IntegrityError) -> bool:
     """Only the database's named domain/code constraint is a public alias conflict."""
-    diagnostic = getattr(getattr(exc, "orig", None), "diag", None)
-    return getattr(diagnostic, "constraint_name", None) == "uq_domain_short_code"
+    return integrity_constraint_name(exc) == "uq_domain_short_code"
 
 
 def _visible_links(user: User):

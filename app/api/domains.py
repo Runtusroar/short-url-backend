@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, ErrorCode, NotFoundError
-from app.database import get_db
+from app.db.session import get_db
 from app.db.models import Domain, ShortLink, User, UserDomainAccess, UserRole
 from app.dependencies import get_current_user, require_admin
 from app.schemas.common import Page

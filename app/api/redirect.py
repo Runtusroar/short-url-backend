@@ -11,8 +11,7 @@ from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
-from app.db import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, get_db
 from app.db.models import AccessResult, Domain, IpBlacklist, ShortLink
 from app.core.errors import NotFoundError
 from app.services.access import AccessContext, decide_access, target_error_decision

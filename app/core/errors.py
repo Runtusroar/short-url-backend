@@ -69,24 +69,36 @@ def _format_validation_errors(errors: list[dict]) -> str:
     return f"{field}{first.get('msg', '格式不正确')}"
 
 
+def integrity_constraint_name(exc: IntegrityError) -> str | None:
+    """Read a PostgreSQL constraint diagnostic without parsing driver error text.
+
+    psycopg exposes the name on ``orig.diag`` while asyncpg exposes it directly
+    on the exception.  Both are structured diagnostics supplied by PostgreSQL.
+    """
+    orig = getattr(exc, "orig", None)
+    diagnostic = getattr(orig, "diag", None)
+    for source in (diagnostic, orig):
+        constraint_name = getattr(source, "constraint_name", None)
+        if isinstance(constraint_name, str) and constraint_name:
+            return constraint_name
+    return None
+
+
 def _integrity_error_message(exc: IntegrityError) -> str:
     orig = getattr(exc, "orig", None)
-    if orig is None:
-        return "数据操作失败"
-    err_msg = str(orig).lower()
-    if "unique constraint" in err_msg:
-        if "uq_domain_short_code" in err_msg:
-            return "该短码在当前域名下已存在"
-        if "username" in err_msg:
-            return "用户名已存在"
-        if "ip_blacklist_ip_key" in err_msg:
-            return "该 IP 已在黑名单中"
-        if "uq_user_domain" in err_msg:
-            return "用户已拥有该域名权限"
-        if "uq_short_link_user" in err_msg:
-            return "该用户已被授权查看此短链"
+    constraint_messages = {
+        "uq_domain_short_code": "该短码在当前域名下已存在",
+        "users_username_key": "用户名已存在",
+        "ip_blacklist_ip_key": "该 IP 已在黑名单中",
+        "uq_user_domain": "用户已拥有该域名权限",
+        "uq_short_link_user": "该用户已被授权查看此短链",
+    }
+    if (constraint_name := integrity_constraint_name(exc)) in constraint_messages:
+        return constraint_messages[constraint_name]
+    sqlstate = getattr(orig, "sqlstate", None)
+    if sqlstate == "23505":
         return "数据已存在"
-    if "foreign key" in err_msg:
+    if sqlstate == "23503":
         return "关联资源不存在"
     return "数据操作失败"
 

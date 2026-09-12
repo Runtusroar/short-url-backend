@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import APIError, ErrorCode
-from app.database import get_db
+from app.db.session import get_db
 from app.db.models import AccessLog, AccessResult, BlockReason, User
 from app.dependencies import get_current_user
 from app.schemas.log import AccessLogCursorPage, AccessLogResponse

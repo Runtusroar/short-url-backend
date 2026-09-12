@@ -14,10 +14,10 @@ from sqlalchemy import create_engine, select, text
 
 from app.core.config import settings
 from app.core.security import get_password_hash
-from app.database import Base
+from app.db.base import Base
 from app.main import app
 from app.db.models import Domain, User
-from app.db import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal
 
 _sync_url = settings.database_url.replace("+asyncpg", "+psycopg")
 _sync_engine = create_engine(_sync_url)

@@ -3,9 +3,12 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from asyncpg.exceptions import UniqueViolationError
 from sqlalchemy.exc import IntegrityError
 
 from app.api import short_links as short_links_api
+from app.db.session import AsyncSessionLocal
+from app.db.models import ShortLink
 
 
 def auth(token: str) -> dict[str, str]:
@@ -199,6 +202,23 @@ async def test_cross_domain_link_id_is_not_disclosed(client, admin_token, manage
         response = await request
         assert response.status_code == 404, response.text
         assert response.json()["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_delete_short_link_succeeds(client, admin_token, domain_a):
+    created = await client.post(
+        "/api/short-links",
+        headers=auth(admin_token),
+        json=aggregate_payload(str(domain_a.id), custom_alias="DeleteSuccessA"),
+    )
+    assert created.status_code == 201, created.text
+
+    deleted = await client.delete(
+        f"/api/short-links/{created.json()['id']}", headers=auth(admin_token)
+    )
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
 
 
 @pytest.mark.asyncio
@@ -400,6 +420,80 @@ async def test_non_short_code_integrity_error_is_not_reported_as_a_short_code_co
 
     assert response.status_code == 409
     assert response.json()["code"] == "CONFLICT"
+
+
+def _asyncpg_unique_violation(constraint_name: str) -> UniqueViolationError:
+    error = UniqueViolationError("duplicate key value violates unique constraint")
+    error.constraint_name = constraint_name
+    return error
+
+
+@pytest.mark.parametrize(
+    ("driver_error", "expected"),
+    [
+        pytest.param(
+            SimpleNamespace(diag=SimpleNamespace(constraint_name="uq_domain_short_code")),
+            True,
+            id="psycopg-diagnostic",
+        ),
+        pytest.param(
+            _asyncpg_unique_violation("uq_domain_short_code"),
+            True,
+            id="asyncpg-diagnostic",
+        ),
+        pytest.param(
+            _asyncpg_unique_violation("target_urls_url_key"),
+            False,
+            id="asyncpg-unrelated-constraint",
+        ),
+    ],
+)
+def test_short_code_constraint_classification_is_driver_independent(driver_error, expected):
+    """Both supported PostgreSQL drivers expose the named constraint without parsing text."""
+    error = IntegrityError("INSERT", {}, driver_error)
+
+    assert short_links_api._is_short_code_unique_violation(error) is expected
+
+
+@pytest.mark.asyncio
+async def test_psycopg_alias_constraint_uses_its_named_diagnostic(domain_a):
+    """The test database's psycopg exception supplies its constraint through ``diag``."""
+    code = f"Psycopg{uuid.uuid4().hex[:18]}"
+    async with AsyncSessionLocal() as session:
+        session.add(ShortLink(domain_id=domain_a.id, short_code=code))
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        session.add(ShortLink(domain_id=domain_a.id, short_code=code))
+        with pytest.raises(IntegrityError) as raised:
+            await session.flush()
+        assert short_links_api._is_short_code_unique_violation(raised.value)
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_alias_constraint_returns_the_public_short_code_conflict(
+    client, operator_token, domain_a, monkeypatch
+):
+    """Production uses asyncpg, so its direct constraint attribute must map to the alias envelope."""
+
+    async def fail_with_asyncpg_alias_constraint(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT INTO short_links",
+            {},
+            _asyncpg_unique_violation("uq_domain_short_code"),
+        )
+
+    monkeypatch.setattr(short_links_api, "_replace_destinations", fail_with_asyncpg_alias_constraint)
+
+    response = await client.post(
+        "/api/short-links",
+        headers=auth(operator_token),
+        json=aggregate_payload(str(domain_a.id), custom_alias="AsyncpgConflictA"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "SHORT_CODE_CONFLICT"
 
 
 @pytest.mark.asyncio

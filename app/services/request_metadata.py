@@ -133,14 +133,19 @@ def _request_scheme(request: Request) -> str:
     return str(request.scope.get("scheme", "http"))
 
 
+def request_client_ip(request: Request) -> str | None:
+    """Return the one validated client address used by redirect policy and auditing."""
+    if settings.trust_proxy_headers:
+        real_ip = _validated_ip(request.headers.get("x-real-ip"))
+        if real_ip is not None:
+            return real_ip
+        return _validated_ip(_first_value(request.headers.get("x-forwarded-for")))
+    return _validated_ip(request.client.host if request.client else None)
+
+
 def extract_request_metadata(request: Request) -> RequestMetadata:
     """Normalize client metadata once so policy and audit fields cannot diverge."""
-    if settings.trust_proxy_headers:
-        ip = _validated_ip(request.headers.get("x-real-ip"))
-        if ip is None:
-            ip = _validated_ip(_first_value(request.headers.get("x-forwarded-for")))
-    else:
-        ip = _validated_ip(request.client.host if request.client else None)
+    ip = request_client_ip(request)
 
     scheme = _request_scheme(request)
     authority = request_authority(request)

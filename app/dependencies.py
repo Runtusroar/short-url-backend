@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import PermissionDeniedError
 from app.core.security import decode_token, oauth2_scheme
-from app.database import get_db as _get_db
+from app.db.session import get_db as _get_db
 from app.db.models import User, UserRole
+from app.services.request_metadata import request_client_ip
 
 
 async def _noop_rate_limit():
@@ -17,29 +18,7 @@ async def _noop_rate_limit():
 
 
 def client_ip_identifier(request: Request) -> str:
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-async def user_identifier(request: Request) -> str:
-    auth = request.headers.get("authorization")
-    if auth and auth.lower().startswith("bearer "):
-        try:
-            user_id = decode_token(auth[7:]).get("sub")
-            if user_id:
-                return f"user:{user_id}"
-        except Exception:
-            pass
-    return client_ip_identifier(request)
-
-
-def rate_limit(times: int, seconds: int, identifier=None):
-    if settings.redis_url:
-        return Depends(RateLimiter(times=times, seconds=seconds, identifier=identifier))
-    return Depends(_noop_rate_limit)
+    return request_client_ip(request) or "unknown"
 
 
 def _extract_token(request: Request, header_token: str | None) -> str | None:
@@ -49,6 +28,22 @@ def _extract_token(request: Request, header_token: str | None) -> str | None:
     if auth and auth.lower().startswith("bearer "):
         return auth[7:]
     return request.cookies.get("access_token")
+
+
+async def user_identifier(request: Request) -> str:
+    if token := _extract_token(request, None):
+        try:
+            user_id = UUID(str(decode_token(token).get("sub")))
+            return f"user:{user_id}"
+        except Exception:
+            pass
+    return client_ip_identifier(request)
+
+
+def rate_limit(times: int, seconds: int, identifier=None):
+    if settings.redis_url:
+        return Depends(RateLimiter(times=times, seconds=seconds, identifier=identifier))
+    return Depends(_noop_rate_limit)
 
 
 async def get_current_user(
