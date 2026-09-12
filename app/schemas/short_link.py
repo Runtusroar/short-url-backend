@@ -154,7 +154,7 @@ class ShortLinkWrite(BaseModel):
         return self
 
 
-class ShortLinkListItem(BaseModel):
+class ShortLinkBase(BaseModel):
     id: UUID
     domain_id: UUID
     short_code: str
@@ -166,6 +166,22 @@ class ShortLinkListItem(BaseModel):
     updated_at: datetime
 
 
-class ShortLinkResponse(ShortLinkListItem):
+class DestinationSummary(BaseModel):
+    allowed_urls: list[str]
+    blocked_urls: list[str]
+
+
+class LinkPolicySummary(LinkPolicyWrite):
+    pass
+
+
+class ShortLinkListItem(ShortLinkBase):
+    short_url: str
+    destination_summary: DestinationSummary
+    policy_summary: LinkPolicySummary | None
+    visit_count: int
+
+
+class ShortLinkResponse(ShortLinkBase):
     destinations: list[DestinationResponse]
     policy: LinkPolicyResponse

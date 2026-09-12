@@ -1,4 +1,8 @@
-from app.services.short_code import generate_short_code, validate_custom_alias
+import uuid
+
+import pytest
+
+from app.services.short_code import create_unique_short_code, generate_short_code, validate_custom_alias
 
 
 def test_generate_short_code_length():
@@ -23,6 +27,23 @@ def test_validate_custom_alias_too_short():
 def test_validate_custom_alias_reserved():
     assert validate_custom_alias("api") is False
     assert validate_custom_alias("API") is False
+
+
+@pytest.mark.parametrize("path", ["api", "admin", "static", "health", "docs", "redoc", "openapi"])
+def test_validate_custom_alias_rejects_every_fixed_root_path(path):
+    assert validate_custom_alias(path) is False
+    assert validate_custom_alias(path.upper()) is False
+
+
+@pytest.mark.asyncio
+async def test_generated_codes_skip_the_same_fixed_root_paths_as_custom_aliases(db, monkeypatch):
+    """A random collision with a root route must be retried just like a custom alias collision."""
+    generated = iter(["health", "safe42"])
+    monkeypatch.setattr("app.services.short_code.generate_short_code", lambda: next(generated))
+
+    code = await create_unique_short_code(db, uuid.uuid4())
+
+    assert code == "safe42"
 
 
 def test_validate_custom_alias_rejects_a_trailing_newline():

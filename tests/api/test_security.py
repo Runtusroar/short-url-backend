@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import pytest
@@ -91,6 +92,20 @@ async def test_global_blacklist_requires_admin_authenticates_and_normalizes_exac
     )
     assert missing.status_code == 404
     assert missing.json()["details"] is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_blacklist_ips_return_a_named_conflict(client, admin_token):
+    """Exact-IP uniqueness remains a stable API contract when both requests pass the preflight read."""
+    ip = f"198.51.100.{int(uuid.uuid4().hex[:2], 16) % 250 + 1}"
+    first, second = await asyncio.gather(
+        client.post("/api/security/ip-blacklist", headers=auth(admin_token), json={"ip": ip}),
+        client.post("/api/security/ip-blacklist", headers=auth(admin_token), json={"ip": ip}),
+    )
+
+    assert sorted(response.status_code for response in (first, second)) == [201, 409]
+    conflict = next(response for response in (first, second) if response.status_code == 409)
+    assert conflict.json()["code"] == "IP_BLACKLIST_CONFLICT"
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,26 @@ async def test_me_returns_the_authenticated_user(client, admin_token):
     assert response.json()["role"] == "admin"
 
 
+async def test_me_returns_the_current_subaccount_grants_and_an_explicit_empty_admin_contract(
+    client, admin_token, operator_token, read_token, domain_a
+):
+    """The session bootstrap must expose the grants used for every subaccount authorization check."""
+    operator = await client.get(
+        "/api/auth/me", headers={"Authorization": f"Bearer {operator_token}"}
+    )
+    reader = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {read_token}"})
+    admin = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {admin_token}"})
+
+    assert operator.status_code == reader.status_code == admin.status_code == 200
+    assert operator.json()["domain_access"] == [
+        {"domain_id": str(domain_a.id), "access_level": "manage"}
+    ]
+    assert reader.json()["domain_access"] == [
+        {"domain_id": str(domain_a.id), "access_level": "read"}
+    ]
+    assert admin.json()["domain_access"] == []
+
+
 async def test_login_rejects_wrong_password(client):
     response = await client.post(
         "/api/auth/login",

@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import AsyncSessionLocal, get_db
 from app.db.models import AccessResult, Domain, IpBlacklist, ShortLink
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, TargetUnavailableError
 from app.services.access import AccessContext, decide_access, target_error_decision
 from app.services.access_log import AccessLogSnapshot, write_access_log
 from app.services.redirect import choose_target
@@ -150,7 +150,8 @@ async def redirect(short_code: str, request: Request, db: AsyncSession = Depends
     )
     target = choose_target(target_snapshots, decision.result)
     if target is None:
-        target_kind = "允许" if decision.result == AccessResult.ALLOWED else "阻止"
+        target_type = "allowed" if decision.result == AccessResult.ALLOWED else "blocked"
+        target_kind = "允许" if target_type == "allowed" else "阻止"
         decision = target_error_decision(target_kind)
 
     await write_access_log(
@@ -159,7 +160,7 @@ async def redirect(short_code: str, request: Request, db: AsyncSession = Depends
     )
 
     if target is None:
-        raise NotFoundError("目标 URL")
+        raise TargetUnavailableError(target_type)
     return Response(content=b"", status_code=302, headers={"Location": target.url})
 
 

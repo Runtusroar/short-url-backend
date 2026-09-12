@@ -4,12 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 from asyncpg.exceptions import UniqueViolationError
+from sqlalchemy import event
 from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_dbapi
 from sqlalchemy.exc import IntegrityError
 
 from app.api import short_links as short_links_api
+from app.db import engine
 from app.db.session import AsyncSessionLocal
-from app.db.models import ShortLink
+from app.db.models import AccessLog, ShortLink
 
 
 def auth(token: str) -> dict[str, str]:
@@ -646,3 +648,61 @@ async def test_short_link_listing_filters_and_paginates(client, admin_token, dom
     assert response.status_code == 200, response.text
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["short_code"] == "CampaignListB"
+
+
+@pytest.mark.asyncio
+async def test_short_link_list_returns_table_summaries_in_a_constant_number_of_queries(
+    client, admin_token, domain_a
+):
+    """Adding page rows must not add destination, policy, or visit-count database round trips."""
+    created = await client.post(
+        "/api/short-links",
+        headers=auth(admin_token),
+        json=aggregate_payload(str(domain_a.id), custom_alias="TableSummaryA"),
+    )
+    assert created.status_code == 201, created.text
+    link_id = created.json()["id"]
+    async with AsyncSessionLocal() as session:
+        session.add_all(
+            [
+                AccessLog(short_link_id=link_id, result="allowed"),
+                AccessLog(short_link_id=link_id, result="blocked", block_reason="bot"),
+            ]
+        )
+        await session.commit()
+
+    statements: list[str] = []
+
+    def record_statement(_, __, statement, ___, ____, _____):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        response = await client.get(
+            f"/api/short-links?domain_id={domain_a.id}", headers=auth(admin_token)
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json()["items"] if item["id"] == link_id)
+    assert item["short_url"] == "http://test.local/TableSummaryA"
+    assert item["destination_summary"] == {
+        "allowed_urls": ["https://example.com/ok"],
+        "blocked_urls": ["https://example.com/blocked"],
+    }
+    assert item["policy_summary"] == {
+        "country_mode": "allow",
+        "countries": ["CN", "SG"],
+        "platform_mode": "off",
+        "platforms": [],
+        "referer_mode": "allow",
+        "referer_patterns": ["*.example.com"],
+        "block_proxy": True,
+        "block_bot": True,
+    }
+    assert item["is_active"] is True
+    assert item["visit_count"] == 2
+    assert item["updated_at"]
+    # One authenticated-user lookup, one total, and one paged aggregate query.
+    assert len(statements) <= 3

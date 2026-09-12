@@ -21,9 +21,16 @@ from app.db.session import AsyncSessionLocal
 
 _sync_url = settings.database_url.replace("+asyncpg", "+psycopg")
 _sync_engine = create_engine(_sync_url)
+_SEED_PASSWORD_HASHES = {
+    "admin": get_password_hash("admin123"),
+    "operator": get_password_hash("operator123"),
+    "client": get_password_hash("client123"),
+    "reader": get_password_hash("reader123"),
+    "manager": get_password_hash("manager123"),
+}
 
 
-def _insert_user(conn, user_id: uuid.UUID, username: str, password: str, role: str):
+def _insert_user(conn, user_id: uuid.UUID, username: str, password_hash: str, role: str):
     conn.execute(
         text(
             """
@@ -34,18 +41,13 @@ def _insert_user(conn, user_id: uuid.UUID, username: str, password: str, role: s
         {
             "id": str(user_id),
             "username": username,
-            "hash": get_password_hash(password),
+            "hash": password_hash,
             "role": role,
         },
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_database():
-    """Create a fresh test schema and seed base accounts."""
-    Base.metadata.drop_all(_sync_engine)
-    Base.metadata.create_all(_sync_engine)
-
+def _seed_base_records(conn) -> None:
     admin_id = uuid.uuid4()
     operator_id = uuid.uuid4()
     client_id = uuid.uuid4()
@@ -54,70 +56,91 @@ def setup_database():
     domain_a_id = uuid.uuid4()
     domain_b_id = uuid.uuid4()
 
-    with _sync_engine.connect() as conn:
-        _insert_user(conn, admin_id, "admin", "admin123", "admin")
-        _insert_user(conn, operator_id, "operator", "operator123", "subaccount")
-        _insert_user(conn, client_id, "client", "client123", "subaccount")
-        _insert_user(conn, reader_id, "reader", "reader123", "subaccount")
-        _insert_user(conn, manager_id, "manager", "manager123", "subaccount")
+    _insert_user(conn, admin_id, "admin", _SEED_PASSWORD_HASHES["admin"], "admin")
+    _insert_user(conn, operator_id, "operator", _SEED_PASSWORD_HASHES["operator"], "subaccount")
+    _insert_user(conn, client_id, "client", _SEED_PASSWORD_HASHES["client"], "subaccount")
+    _insert_user(conn, reader_id, "reader", _SEED_PASSWORD_HASHES["reader"], "subaccount")
+    _insert_user(conn, manager_id, "manager", _SEED_PASSWORD_HASHES["manager"], "subaccount")
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO domains (id, name, is_active, created_at)
-                VALUES (:id, :name, true, now())
+    conn.execute(
+        text(
             """
+            INSERT INTO domains (id, name, is_active, created_at)
+            VALUES (:id, :name, true, now())
+        """
         ),
             {"id": str(domain_a_id), "name": "test.local"},
-        )
+    )
 
+    conn.execute(
+        text(
+            """
+            INSERT INTO domains (id, name, is_active, created_at)
+            VALUES (:id, :name, true, now())
+            """
+        ),
+            {"id": str(domain_b_id), "name": "second.test.local"},
+    )
+
+    for user_id in (operator_id, client_id):
         conn.execute(
             text(
                 """
-                INSERT INTO domains (id, name, is_active, created_at)
-                VALUES (:id, :name, true, now())
+                INSERT INTO user_domain_access (user_id, domain_id, access_level, created_at)
+                VALUES (:user_id, :domain_id, 'manage', now())
                 """
             ),
-            {"id": str(domain_b_id), "name": "second.test.local"},
+            {
+                "user_id": str(user_id),
+                "domain_id": str(domain_a_id),
+            },
         )
 
-        for user_id in (operator_id, client_id):
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO user_domain_access (user_id, domain_id, access_level, created_at)
-                    VALUES (:user_id, :domain_id, 'manage', now())
-                    """
-                ),
-                {
-                    "user_id": str(user_id),
-                    "domain_id": str(domain_a_id),
-                },
-            )
+    for user_id, domain_id, access_level in (
+        (reader_id, domain_a_id, "read"),
+        (manager_id, domain_b_id, "manage"),
+    ):
+        conn.execute(
+            text(
+                """
+                INSERT INTO user_domain_access (user_id, domain_id, access_level, created_at)
+                VALUES (:user_id, :domain_id, :access_level, now())
+                """
+            ),
+            {
+                "user_id": str(user_id),
+                "domain_id": str(domain_id),
+                "access_level": access_level,
+            },
+        )
 
-        for user_id, domain_id, access_level in (
-            (reader_id, domain_a_id, "read"),
-            (manager_id, domain_b_id, "manage"),
-        ):
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO user_domain_access (user_id, domain_id, access_level, created_at)
-                    VALUES (:user_id, :domain_id, :access_level, now())
-                    """
-                ),
-                {
-                    "user_id": str(user_id),
-                    "domain_id": str(domain_id),
-                    "access_level": access_level,
-                },
-            )
 
-        conn.commit()
+def _reset_test_database() -> None:
+    table_names = ", ".join(table.name for table in reversed(Base.metadata.sorted_tables))
+    with _sync_engine.begin() as conn:
+        conn.execute(text(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"))
+        _seed_base_records(conn)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_database():
+    """Create the test-only tables once; each test receives a reseeded transaction boundary."""
+    Base.metadata.drop_all(_sync_engine)
+    Base.metadata.create_all(_sync_engine)
 
     yield
 
     Base.metadata.drop_all(_sync_engine)
+
+
+@pytest.fixture(autouse=True)
+def isolate_database(setup_database):
+    """Rollback alone cannot undo HTTP handlers' committed sessions, so truncate and reseed per test."""
+    _reset_test_database()
+    try:
+        yield
+    finally:
+        _reset_test_database()
 
 
 @pytest_asyncio.fixture

@@ -123,6 +123,20 @@ async def test_domain_create_and_update_return_the_canonical_dns_name(client, ad
 
 
 @pytest.mark.asyncio
+async def test_concurrent_domain_names_return_a_named_conflict(client, admin_token):
+    """Concurrent writes must classify PostgreSQL's named unique violation, not leak a generic conflict."""
+    payload = {"name": f"{uuid.uuid4().hex[:16]}.concurrent.test"}
+    first, second = await asyncio.gather(
+        client.post("/api/domains", headers=auth(admin_token), json=payload),
+        client.post("/api/domains", headers=auth(admin_token), json=payload),
+    )
+
+    assert sorted(response.status_code for response in (first, second)) == [201, 409]
+    conflict = next(response for response in (first, second) if response.status_code == 409)
+    assert conflict.json()["code"] == "DOMAIN_CONFLICT"
+
+
+@pytest.mark.asyncio
 async def test_explicit_null_domain_name_is_a_noop(client, admin_token):
     created = await client.post(
         "/api/domains",

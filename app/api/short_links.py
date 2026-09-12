@@ -1,19 +1,23 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import ARRAY, Text, cast, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import array as pg_array
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.errors import ConflictError, ErrorCode, NotFoundError, integrity_constraint_name
 from app.db.session import get_db
-from app.db.models import AccessLevel, LinkPolicy, ShortLink, TargetUrl, User
+from app.db.models import AccessLevel, AccessLog, Domain, LinkPolicy, ShortLink, TargetUrl, User
 from app.dependencies import get_current_user
 from app.schemas.common import Page
 from app.schemas.short_link import (
     DestinationResponse,
+    DestinationSummary,
     LinkPolicyResponse,
+    LinkPolicySummary,
     ShortLinkListItem,
     ShortLinkResponse,
     ShortLinkWrite,
@@ -51,23 +55,23 @@ def _policy_response(policy: LinkPolicy | None) -> LinkPolicyResponse:
     )
 
 
-def _list_item(link: ShortLink) -> ShortLinkListItem:
-    return ShortLinkListItem(
-        id=link.id,
-        domain_id=link.domain_id,
-        short_code=link.short_code,
-        is_custom_alias=link.is_custom_alias,
-        note=link.note,
-        owner_id=link.owner_id,
-        is_active=link.is_active,
-        created_at=link.created_at,
-        updated_at=link.updated_at,
-    )
+def _link_fields(link: ShortLink) -> dict[str, object]:
+    return {
+        "id": link.id,
+        "domain_id": link.domain_id,
+        "short_code": link.short_code,
+        "is_custom_alias": link.is_custom_alias,
+        "note": link.note,
+        "owner_id": link.owner_id,
+        "is_active": link.is_active,
+        "created_at": link.created_at,
+        "updated_at": link.updated_at,
+    }
 
 
 def _response(link: ShortLink) -> ShortLinkResponse:
     return ShortLinkResponse(
-        **_list_item(link).model_dump(),
+        **_link_fields(link),
         destinations=[
             DestinationResponse(
                 id=destination.id,
@@ -80,6 +84,42 @@ def _response(link: ShortLink) -> ShortLinkResponse:
             for destination in link.target_urls
         ],
         policy=_policy_response(link.policy),
+    )
+
+
+def _policy_summary_from_row(row) -> LinkPolicySummary | None:
+    if row.policy_short_link_id is None:
+        return None
+    return LinkPolicySummary(
+        country_mode=row.country_mode,
+        countries=row.countries,
+        platform_mode=row.platform_mode,
+        platforms=row.platforms,
+        referer_mode=row.referer_mode,
+        referer_patterns=row.referer_patterns,
+        block_proxy=row.block_proxy,
+        block_bot=row.block_bot,
+    )
+
+
+def _list_item(row) -> ShortLinkListItem:
+    return ShortLinkListItem(
+        id=row.id,
+        domain_id=row.domain_id,
+        short_code=row.short_code,
+        is_custom_alias=row.is_custom_alias,
+        note=row.note,
+        owner_id=row.owner_id,
+        is_active=row.is_active,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        short_url=f"{settings.public_short_url_scheme}://{row.domain_name}/{row.short_code}",
+        destination_summary=DestinationSummary(
+            allowed_urls=row.allowed_urls,
+            blocked_urls=row.blocked_urls,
+        ),
+        policy_summary=_policy_summary_from_row(row),
+        visit_count=row.visit_count,
     )
 
 
@@ -182,16 +222,71 @@ async def list_short_links(
     if is_active is not None:
         filters.append(ShortLink.is_active.is_(is_active))
 
+    destination_summaries = (
+        select(
+            TargetUrl.short_link_id.label("short_link_id"),
+            func.array_agg(TargetUrl.url)
+            .filter(TargetUrl.url_type == "allowed")
+            .label("allowed_urls"),
+            func.array_agg(TargetUrl.url)
+            .filter(TargetUrl.url_type == "blocked")
+            .label("blocked_urls"),
+        )
+        .group_by(TargetUrl.short_link_id)
+        .subquery()
+    )
+    visit_counts = (
+        select(
+            AccessLog.short_link_id.label("short_link_id"),
+            func.count(AccessLog.id).label("visit_count"),
+        )
+        .where(AccessLog.short_link_id.is_not(None))
+        .group_by(AccessLog.short_link_id)
+        .subquery()
+    )
+
     total = await db.scalar(select(func.count()).select_from(ShortLink).where(*filters)) or 0
     result = await db.execute(
-        select(ShortLink)
+        select(
+            ShortLink.id,
+            ShortLink.domain_id,
+            ShortLink.short_code,
+            ShortLink.is_custom_alias,
+            ShortLink.note,
+            ShortLink.owner_id,
+            ShortLink.is_active,
+            ShortLink.created_at,
+            ShortLink.updated_at,
+            Domain.name.label("domain_name"),
+            func.coalesce(destination_summaries.c.allowed_urls, cast(pg_array([]), ARRAY(Text))).label(
+                "allowed_urls"
+            ),
+            func.coalesce(destination_summaries.c.blocked_urls, cast(pg_array([]), ARRAY(Text))).label(
+                "blocked_urls"
+            ),
+            func.coalesce(visit_counts.c.visit_count, 0).label("visit_count"),
+            LinkPolicy.short_link_id.label("policy_short_link_id"),
+            LinkPolicy.country_mode,
+            LinkPolicy.countries,
+            LinkPolicy.platform_mode,
+            LinkPolicy.platforms,
+            LinkPolicy.referer_mode,
+            LinkPolicy.referer_patterns,
+            LinkPolicy.block_proxy,
+            LinkPolicy.block_bot,
+        )
+        .select_from(ShortLink)
+        .join(Domain, Domain.id == ShortLink.domain_id)
+        .outerjoin(destination_summaries, destination_summaries.c.short_link_id == ShortLink.id)
+        .outerjoin(visit_counts, visit_counts.c.short_link_id == ShortLink.id)
+        .outerjoin(LinkPolicy, LinkPolicy.short_link_id == ShortLink.id)
         .where(*filters)
         .order_by(ShortLink.created_at.desc(), ShortLink.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     return Page(
-        items=[_list_item(link) for link in result.scalars()],
+        items=[_list_item(row) for row in result],
         page=page,
         page_size=page_size,
         total=total,

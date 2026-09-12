@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     maxmind_timeout_seconds: float = 1.5
     access_token_expire_minutes: int = 60 * 24
     cookie_secure: bool = False
+    public_short_url_scheme: str = "http"
 
     @field_validator("app_env")
     @classmethod
@@ -35,6 +36,14 @@ class Settings(BaseSettings):
         if environment not in {"development", "test", "production"}:
             raise ValueError("APP_ENV 必须是 development、test 或 production")
         return environment
+
+    @field_validator("public_short_url_scheme")
+    @classmethod
+    def validate_public_short_url_scheme(cls, value: str) -> str:
+        scheme = value.strip().lower()
+        if scheme not in {"http", "https"}:
+            raise ValueError("PUBLIC_SHORT_URL_SCHEME 必须是 http 或 https")
+        return scheme
 
     @field_validator("maxmind_account_id", "maxmind_license_key", mode="before")
     @classmethod
@@ -66,6 +75,8 @@ class Settings(BaseSettings):
             raise ValueError("生产环境 SECRET_KEY 必须是至少 32 字符且非默认的随机密钥")
         if not self.cookie_secure:
             raise ValueError("生产环境必须设置 COOKIE_SECURE=true")
+        if self.public_short_url_scheme != "https":
+            raise ValueError("生产环境必须设置 PUBLIC_SHORT_URL_SCHEME=https")
         return self
 
 

@@ -244,6 +244,7 @@ async def test_missing_allowed_or_blocked_target_is_logged_as_an_explicit_error(
         "/CampaignA", headers={"Host": allowed_domain.name}, follow_redirects=False
     )
     assert allowed_response.status_code == 404
+    assert allowed_response.json()["code"] == "ALLOWED_TARGET_UNAVAILABLE"
     allowed_log = await _latest_log(allowed_link.id)
     assert (allowed_log.result, allowed_log.block_reason, allowed_log.block_detail) == (
         "error",
@@ -261,6 +262,7 @@ async def test_missing_allowed_or_blocked_target_is_logged_as_an_explicit_error(
         "/CampaignA", headers={"Host": blocked_domain.name}, follow_redirects=False
     )
     assert blocked_response.status_code == 404
+    assert blocked_response.json()["code"] == "BLOCKED_TARGET_UNAVAILABLE"
     blocked_log = await _latest_log(blocked_link.id)
     assert (blocked_log.result, blocked_log.block_reason, blocked_log.block_detail) == (
         "error",

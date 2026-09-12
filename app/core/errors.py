@@ -17,6 +17,8 @@ _MAX_INTEGRITY_DIAGNOSTIC_CHAIN_DEPTH = 4
 
 
 class ErrorCode(StrEnum):
+    ALLOWED_TARGET_UNAVAILABLE = "ALLOWED_TARGET_UNAVAILABLE"
+    BLOCKED_TARGET_UNAVAILABLE = "BLOCKED_TARGET_UNAVAILABLE"
     CONFLICT = "CONFLICT"
     DOMAIN_CONFLICT = "DOMAIN_CONFLICT"
     DOMAIN_IN_USE = "DOMAIN_IN_USE"
@@ -61,6 +63,25 @@ class UnauthorizedError(APIError):
         super().__init__(ErrorCode.UNAUTHORIZED, message, status.HTTP_401_UNAUTHORIZED)
 
 
+class TargetUnavailableError(APIError):
+    def __init__(self, target_type: str):
+        if target_type == "allowed":
+            super().__init__(
+                ErrorCode.ALLOWED_TARGET_UNAVAILABLE,
+                "没有可用的允许目标 URL",
+                status.HTTP_404_NOT_FOUND,
+            )
+            return
+        if target_type == "blocked":
+            super().__init__(
+                ErrorCode.BLOCKED_TARGET_UNAVAILABLE,
+                "没有可用的阻止目标 URL",
+                status.HTTP_404_NOT_FOUND,
+            )
+            return
+        raise ValueError("target_type must be allowed or blocked")
+
+
 def _format_validation_errors(errors: list[dict]) -> str:
     if not errors:
         return "请求参数错误"
@@ -95,11 +116,21 @@ def integrity_constraint_name(exc: IntegrityError) -> str | None:
     return None
 
 
+def integrity_conflict_code(exc: IntegrityError) -> ErrorCode | None:
+    """Map only PostgreSQL named unique constraints to stable public conflicts."""
+    return {
+        "users_username_key": ErrorCode.USERNAME_CONFLICT,
+        "domains_name_key": ErrorCode.DOMAIN_CONFLICT,
+        "ip_blacklist_ip_key": ErrorCode.IP_BLACKLIST_CONFLICT,
+    }.get(integrity_constraint_name(exc))
+
+
 def _integrity_error_message(exc: IntegrityError) -> str:
     orig = getattr(exc, "orig", None)
     constraint_messages = {
         "uq_domain_short_code": "该短码在当前域名下已存在",
         "users_username_key": "用户名已存在",
+        "domains_name_key": "域名已存在",
         "ip_blacklist_ip_key": "该 IP 已在黑名单中",
         "uq_user_domain": "用户已拥有该域名权限",
         "uq_short_link_user": "该用户已被授权查看此短链",
@@ -127,6 +158,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content={"code": f"HTTP_{exc.status_code}", "message": exc.detail, "details": None},
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -153,9 +185,14 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(IntegrityError)
     async def integrity_error_handler(request: Request, exc: IntegrityError):
+        conflict_code = integrity_conflict_code(exc)
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
-            content={"code": ErrorCode.CONFLICT, "message": _integrity_error_message(exc), "details": None},
+            content={
+                "code": conflict_code or ErrorCode.CONFLICT,
+                "message": _integrity_error_message(exc),
+                "details": None,
+            },
         )
 
     @app.exception_handler(Exception)

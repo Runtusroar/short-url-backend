@@ -1,5 +1,5 @@
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -66,6 +66,53 @@ def test_production_requires_secure_cookies_but_development_remains_usable(monke
     configured = Settings(app_env="development", cookie_secure=False, _env_file=None)
     assert configured.app_env == "development"
     assert configured.cookie_secure is False
+
+
+def test_public_short_url_scheme_defaults_to_http_and_production_requires_https():
+    """An HTTPS deployment must never render table links with an insecure scheme."""
+    development = Settings(app_env="development", _env_file=None)
+    assert development.public_short_url_scheme == "http"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            app_env="production",
+            secret_key="a-strong-production-secret-key-with-32-chars",
+            cookie_secure=True,
+            public_short_url_scheme="http",
+            _env_file=None,
+        )
+
+    production = Settings(
+        app_env="production",
+        secret_key="a-strong-production-secret-key-with-32-chars",
+        cookie_secure=True,
+        public_short_url_scheme="https",
+        _env_file=None,
+    )
+    assert production.public_short_url_scheme == "https"
+
+
+def test_http_error_envelope_preserves_protocol_headers():
+    """Discarding Retry-After or Allow turns valid HTTP error responses into broken client contracts."""
+    isolated = FastAPI()
+    register_exception_handlers(isolated)
+
+    @isolated.get("/rate-limited")
+    async def rate_limited():
+        raise HTTPException(status_code=429, detail="Slow down", headers={"Retry-After": "30"})
+
+    @isolated.get("/read-only")
+    async def read_only():
+        return {"ok": True}
+
+    with TestClient(isolated, raise_server_exceptions=False) as client:
+        limited = client.get("/rate-limited")
+        method_not_allowed = client.post("/read-only")
+
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "30"
+    assert method_not_allowed.status_code == 405
+    assert method_not_allowed.headers["allow"] == "GET"
 
 
 def test_unhandled_exception_logs_a_traceback_but_keeps_the_stable_error_envelope(caplog):

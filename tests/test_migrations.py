@@ -450,6 +450,31 @@ def test_fresh_upgrade_creates_normalized_schema(monkeypatch):
             )
             assert {"user_domain_access", "link_policies", "ip_reputation"} <= tables
             assert {"user_domains", "access_rules", "short_link_permissions"}.isdisjoint(tables)
+            access_log_indexes = set(
+                connection.execute(
+                    text(
+                        """
+                        SELECT indexname FROM pg_indexes
+                        WHERE schemaname = :schema AND tablename = 'access_logs'
+                        """
+                    ),
+                    {"schema": schema},
+                ).scalars()
+            )
+            assert {
+                "ix_access_logs_accessed_at_id",
+                "ix_access_logs_domain_accessed_at_id",
+                "ix_access_logs_short_link_accessed_at_id",
+                "ix_access_logs_result_accessed_at",
+                "ix_access_logs_country_code_accessed_at",
+                "ix_access_logs_block_reason_accessed_at",
+            } <= access_log_indexes
+            assert {
+                "idx_access_logs_dedup",
+                "idx_access_logs_domain",
+                "idx_access_logs_plus8",
+                "idx_access_logs_short_link",
+            }.isdisjoint(access_log_indexes)
     finally:
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

@@ -94,6 +94,26 @@ async def test_user_update_without_password_keeps_existing_password(client, admi
 
 
 @pytest.mark.asyncio
+async def test_concurrent_usernames_return_a_named_conflict_and_leave_the_admin_token_usable(
+    client, admin_token
+):
+    """The unique index, not a racy preflight read, is authoritative for concurrent creates."""
+    username = f"concurrent-{uuid.uuid4().hex[:12]}"
+    payload = {"username": username, "password": "reader-pass", "role": "subaccount"}
+    first, second = await asyncio.gather(
+        client.post("/api/users", headers=auth(admin_token), json=payload),
+        client.post("/api/users", headers=auth(admin_token), json=payload),
+    )
+
+    assert sorted(response.status_code for response in (first, second)) == [201, 409]
+    conflict = next(response for response in (first, second) if response.status_code == 409)
+    assert conflict.json()["code"] == "USERNAME_CONFLICT"
+    still_authenticated = await client.get("/api/auth/me", headers=auth(admin_token))
+    assert still_authenticated.status_code == 200
+    assert still_authenticated.json()["username"] == "admin"
+
+
+@pytest.mark.asyncio
 async def test_user_administration_requires_an_authenticated_administrator(client, operator_token, domain_a):
     unauthenticated = await client.get("/api/users")
     assert unauthenticated.status_code == 401

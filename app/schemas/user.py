@@ -52,4 +52,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    domain_access: list[DomainGrantResponse] = Field(default_factory=list)
+    domain_access: list[DomainGrantResponse] = Field(
+        default_factory=list,
+        description="Subaccount domain grants; administrators receive an empty list because their role is global.",
+    )

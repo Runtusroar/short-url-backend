@@ -12,7 +12,11 @@ CHARSET = string.ascii_lowercase + string.digits
 CODE_LENGTH = 6
 MAX_RETRIES = 5
 CUSTOM_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
-RESERVED_PREFIXES = {"api", "admin", "static", "docs", "openapi"}
+RESERVED_SHORT_CODES = frozenset({"api", "admin", "static", "health", "docs", "redoc", "openapi"})
+
+
+def is_reserved_short_code(code: str) -> bool:
+    return code.lower() in RESERVED_SHORT_CODES
 
 
 def generate_short_code(length: int = CODE_LENGTH) -> str:
@@ -22,7 +26,7 @@ def generate_short_code(length: int = CODE_LENGTH) -> str:
 def validate_custom_alias(alias: str) -> bool:
     if CUSTOM_ALIAS_RE.fullmatch(alias) is None:
         return False
-    if alias.lower() in RESERVED_PREFIXES:
+    if is_reserved_short_code(alias):
         return False
     return True
 
@@ -47,6 +51,8 @@ async def create_unique_short_code(
 
     for _ in range(MAX_RETRIES):
         code = generate_short_code()
+        if is_reserved_short_code(code):
+            continue
         existing = await db.execute(
             select(ShortLink).where(
                 ShortLink.domain_id == domain_id,
